@@ -1,0 +1,40 @@
+# Build artifacts
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Object files and debug symbols
+*.d
+*.su
+*.dSYM/
+*.dSYM
+
+# Executables
+/bin/
+/obj/
+
+
+# ROM files
+/rom/*
+
+# IDE and editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile.cmake
+
+# Dependencies
+*.out
