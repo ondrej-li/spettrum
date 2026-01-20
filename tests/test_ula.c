@@ -55,7 +55,7 @@ static int test_empty_vram(void)
     uint8_t *vram = calloc(SPECTRUM_RAM_SIZE, sizeof(uint8_t));
     TEST_ASSERT(vram != NULL, "VRAM allocation failed");
 
-    convert_vram_to_matrix(vram);
+    convert_vram_to_matrix(vram, ULA_RENDER_BLOCK2X2);
 
     // Check first row is all spaces
     for (int x = 0; x < 5; x++)
@@ -82,7 +82,7 @@ static int test_single_pixel_br(void)
     // This corresponds to pixel (1,1)
     set_pixel(vram, 1, 1, 1);
 
-    convert_vram_to_matrix(vram);
+    convert_vram_to_matrix(vram, ULA_RENDER_BLOCK2X2);
 
     TEST_ASSERT_CHAR("▗", ula_matrix.matrix[0][0], "BR pixel should produce ▗");
 
@@ -105,7 +105,7 @@ static int test_two_pixels(void)
     set_pixel(vram, 0, 0, 1);
     set_pixel(vram, 1, 1, 1);
 
-    convert_vram_to_matrix(vram);
+    convert_vram_to_matrix(vram, ULA_RENDER_BLOCK2X2);
 
     // TL=1, TR=0, BL=0, BR=1 -> pattern 1001 (9) -> ▚ (diagonal /)
     TEST_ASSERT_CHAR("▚", ula_matrix.matrix[0][0], "TL+BR should produce ▚");
@@ -131,7 +131,7 @@ static int test_full_block(void)
     set_pixel(vram, 0, 1, 1);
     set_pixel(vram, 1, 1, 1);
 
-    convert_vram_to_matrix(vram);
+    convert_vram_to_matrix(vram, ULA_RENDER_BLOCK2X2);
 
     TEST_ASSERT_CHAR("█", ula_matrix.matrix[0][0], "All pixels should produce █");
 
@@ -154,7 +154,7 @@ static int test_top_row(void)
     set_pixel(vram, 0, 0, 1);
     set_pixel(vram, 1, 0, 1);
 
-    convert_vram_to_matrix(vram);
+    convert_vram_to_matrix(vram, ULA_RENDER_BLOCK2X2);
 
     // TL=1, TR=1, BL=0, BR=0 -> pattern 1100 (12) -> ▀
     TEST_ASSERT_CHAR("▀", ula_matrix.matrix[0][0], "Top row should produce ▀");
@@ -178,7 +178,7 @@ static int test_bottom_row(void)
     set_pixel(vram, 0, 1, 1);
     set_pixel(vram, 1, 1, 1);
 
-    convert_vram_to_matrix(vram);
+    convert_vram_to_matrix(vram, ULA_RENDER_BLOCK2X2);
 
     // TL=0, TR=0, BL=1, BR=1 -> pattern 0011 (3) -> ▄
     TEST_ASSERT_CHAR("▄", ula_matrix.matrix[0][0], "Bottom row should produce ▄");
@@ -202,7 +202,7 @@ static int test_left_column(void)
     set_pixel(vram, 0, 0, 1);
     set_pixel(vram, 0, 1, 1);
 
-    convert_vram_to_matrix(vram);
+    convert_vram_to_matrix(vram, ULA_RENDER_BLOCK2X2);
 
     // TL=1, TR=0, BL=1, BR=0 -> pattern 1010 (10) -> ▌
     TEST_ASSERT_CHAR("▌", ula_matrix.matrix[0][0], "Left column should produce ▌");
@@ -226,7 +226,7 @@ static int test_right_column(void)
     set_pixel(vram, 1, 0, 1);
     set_pixel(vram, 1, 1, 1);
 
-    convert_vram_to_matrix(vram);
+    convert_vram_to_matrix(vram, ULA_RENDER_BLOCK2X2);
 
     // TL=0, TR=1, BL=0, BR=1 -> pattern 0101 (5) -> ▐
     TEST_ASSERT_CHAR("▐", ula_matrix.matrix[0][0], "Right column should produce ▐");
@@ -258,7 +258,7 @@ static int test_multiple_blocks(void)
     // Third block (x=2): BR only
     set_pixel(vram, 5, 1, 1);
 
-    convert_vram_to_matrix(vram);
+    convert_vram_to_matrix(vram, ULA_RENDER_BLOCK2X2);
 
     TEST_ASSERT_CHAR("█", ula_matrix.matrix[0][0], "First block should be full");
     TEST_ASSERT_CHAR(" ", ula_matrix.matrix[0][1], "Second block should be empty");
@@ -287,10 +287,140 @@ static int test_different_rows(void)
     set_pixel(vram, 0, 2, 1);
     set_pixel(vram, 0, 3, 1);
 
-    convert_vram_to_matrix(vram);
+    convert_vram_to_matrix(vram, ULA_RENDER_BLOCK2X2);
 
     TEST_ASSERT_CHAR("▀", ula_matrix.matrix[0][0], "First row top should be ▀");
     TEST_ASSERT_CHAR("▌", ula_matrix.matrix[1][0], "Second row left should be ▌");
+
+    free(vram);
+    printf("  PASS\n");
+    return 1;
+}
+
+/**
+ * Helper to set an attribute byte in VRAM
+ */
+static void set_attribute(uint8_t *vram, int char_col, int char_row, uint8_t ink, uint8_t paper, uint8_t bright)
+{
+    int attr_address = SPECTRUM_VRAM_SIZE + (char_row * SPECTRUM_ATTR_COLS) + char_col;
+    uint8_t attr_byte = (ink & ATTR_INK_MASK) | ((paper & 0x07) << 3) | ((bright & 0x01) << 6);
+    vram[attr_address] = attr_byte;
+}
+
+/**
+ * Test 11: Attributes - Default values (when uninitialized)
+ */
+static int test_attributes_default(void)
+{
+    printf("Test 11: Attributes - Default values...\n");
+
+    uint8_t *vram = calloc(SPECTRUM_RAM_SIZE, sizeof(uint8_t));
+    TEST_ASSERT(vram != NULL, "VRAM allocation failed");
+
+    // Set a pixel to make the block visible
+    set_pixel(vram, 0, 0, 1);
+
+    // Don't set any attribute bytes - they will be 0x00
+    // In ZX Spectrum, 0x00 = black ink (0) on black paper (0)
+    convert_vram_to_matrix(vram, ULA_RENDER_BLOCK2X2);
+
+    // Check the color of the first block
+    color_attr_t attr = ula_matrix.matrix_colors[0][0];
+    TEST_ASSERT(attr.ink == 0, "Default ink should be 0 (black)");
+    TEST_ASSERT(attr.paper == 0, "Default paper should be 0 (black) when uninitialized");
+    TEST_ASSERT(attr.bright == 0, "Default bright should be 0");
+
+    free(vram);
+    printf("  PASS\n");
+    return 1;
+}
+
+/**
+ * Test 12: Attributes - Set custom colors
+ */
+static int test_attributes_custom(void)
+{
+    printf("Test 12: Attributes - Custom colors...\n");
+
+    uint8_t *vram = calloc(SPECTRUM_RAM_SIZE, sizeof(uint8_t));
+    TEST_ASSERT(vram != NULL, "VRAM allocation failed");
+
+    // Set a pixel
+    set_pixel(vram, 0, 0, 1);
+
+    // Set attribute: yellow (ink=6) on cyan (paper=5), bright
+    set_attribute(vram, 0, 0, 6, 5, 1);
+
+    convert_vram_to_matrix(vram, ULA_RENDER_BLOCK2X2);
+
+    color_attr_t attr = ula_matrix.matrix_colors[0][0];
+    TEST_ASSERT(attr.ink == 6, "Ink should be 6 (yellow)");
+    TEST_ASSERT(attr.paper == 5, "Paper should be 5 (cyan)");
+    TEST_ASSERT(attr.bright == 1, "Bright should be 1");
+
+    free(vram);
+    printf("  PASS\n");
+    return 1;
+}
+
+/**
+ * Test 13: Attributes - Different blocks have different colors
+ */
+static int test_attributes_multiple_blocks(void)
+{
+    printf("Test 13: Attributes - Multiple blocks...\n");
+
+    uint8_t *vram = calloc(SPECTRUM_RAM_SIZE, sizeof(uint8_t));
+    TEST_ASSERT(vram != NULL, "VRAM allocation failed");
+
+    // Set pixels for two blocks
+    set_pixel(vram, 0, 0, 1); // Block (0,0) in character grid (0,0)
+    set_pixel(vram, 8, 0, 1); // Block (1,0) in character grid (1,0)
+
+    // Set different attributes for these character cells
+    set_attribute(vram, 0, 0, 2, 4, 0); // Red on magenta
+    set_attribute(vram, 1, 0, 3, 1, 1); // Magenta on blue, bright
+
+    convert_vram_to_matrix(vram, ULA_RENDER_BLOCK2X2);
+
+    color_attr_t attr1 = ula_matrix.matrix_colors[0][0];
+    color_attr_t attr2 = ula_matrix.matrix_colors[0][4]; // 8 pixels / 2 = 4
+
+    TEST_ASSERT(attr1.ink == 2, "First block ink should be 2");
+    TEST_ASSERT(attr1.paper == 4, "First block paper should be 4");
+    TEST_ASSERT(attr1.bright == 0, "First block bright should be 0");
+
+    TEST_ASSERT(attr2.ink == 3, "Second block ink should be 3");
+    TEST_ASSERT(attr2.paper == 1, "Second block paper should be 1");
+    TEST_ASSERT(attr2.bright == 1, "Second block bright should be 1");
+
+    free(vram);
+    printf("  PASS\n");
+    return 1;
+}
+
+/**
+ * Test 14: Attributes - Braille mode colors
+ */
+static int test_attributes_braille(void)
+{
+    printf("Test 14: Attributes - Braille mode...\n");
+
+    uint8_t *vram = calloc(SPECTRUM_RAM_SIZE, sizeof(uint8_t));
+    TEST_ASSERT(vram != NULL, "VRAM allocation failed");
+
+    // Set a pixel in braille block
+    set_pixel(vram, 0, 0, 1);
+
+    // Set attribute
+    set_attribute(vram, 0, 0, 1, 3, 0); // Blue on magenta
+
+    convert_vram_to_matrix(vram, ULA_RENDER_BRAILLE2X4);
+
+    color_attr_t attr = ula_matrix.braille_colors[0][0];
+    TEST_ASSERT(attr.ink == 1, "Braille block ink should be 1");
+    TEST_ASSERT(attr.paper == 3, "Braille block paper should be 3");
+    TEST_ASSERT(attr.bright == 0, "Braille block bright should be 0");
 
     free(vram);
     printf("  PASS\n");
@@ -345,6 +475,22 @@ int main(void)
 
     total++;
     if (test_different_rows())
+        passed++;
+
+    total++;
+    if (test_attributes_default())
+        passed++;
+
+    total++;
+    if (test_attributes_custom())
+        passed++;
+
+    total++;
+    if (test_attributes_multiple_blocks())
+        passed++;
+
+    total++;
+    if (test_attributes_braille())
         passed++;
 
     printf("\n=== Results ===\n");

@@ -12,6 +12,9 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <signal.h>
+#include <termios.h>
+#include <fcntl.h>
+#include <sys/select.h>
 
 // Include Z80 implementation directly
 #include "z80.c"
@@ -39,6 +42,15 @@ typedef struct
     FILE *disasm_file;        // File for disassembly output
     volatile int dump_memory; // Flag to trigger memory dump
     int dump_count;           // Counter for dump filenames
+    volatile int paused;      // Pause state
+    volatile int speed_delay; // Delay in microseconds (0 = full speed)
+    volatile int step_mode;   // Step mode: execute one instruction at a time
+
+    // Debug tracking
+    uint16_t last_pc[10];        // Last 10 PC values
+    uint8_t last_opcode[10];     // Last 10 opcodes
+    int history_index;           // Circular buffer index
+    uint64_t total_instructions; // Total instructions executed
 } spettrum_emulator_t;
 
 // Global emulator reference for signal handling
@@ -55,13 +67,92 @@ static void *ula_render_thread(void *arg)
     while (emulator->running)
     {
         // Convert VRAM to character matrix
-        convert_vram_to_matrix(&emulator->memory[SPETTRUM_VRAM_START]);
+        convert_vram_to_matrix(&emulator->memory[SPETTRUM_VRAM_START], emulator->display->render_mode);
 
         // Render matrix to terminal
         ula_render_to_terminal();
     }
 
     return NULL;
+}
+
+/**
+ * Check for keyboard input (non-blocking)
+ * Returns: character pressed, or -1 if none
+ */
+static int check_keyboard_input(void)
+{
+    struct timeval tv;
+    fd_set fds;
+    tv.tv_sec = 0;
+    tv.tv_usec = 0;
+    FD_ZERO(&fds);
+    FD_SET(STDIN_FILENO, &fds);
+    select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
+    if (FD_ISSET(STDIN_FILENO, &fds))
+    {
+        char c;
+        if (read(STDIN_FILENO, &c, 1) == 1)
+            return c;
+    }
+    return -1;
+}
+
+/**
+ * Display CPU state and debug info when paused
+ */
+static void display_debug_info(spettrum_emulator_t *emulator)
+{
+    z80_registers_t *regs = &emulator->cpu->regs;
+
+    // Move to line 49 (bottom area)
+    printf("\033[49;1H\033[K");
+    printf("PC:%04X SP:%04X AF:%04X BC:%04X DE:%04X HL:%04X IX:%04X IY:%04X\n",
+           regs->pc, regs->sp, (regs->a << 8) | regs->f,
+           (regs->b << 8) | regs->c, (regs->d << 8) | regs->e,
+           (regs->h << 8) | regs->l, regs->ix, regs->iy);
+
+    printf("\033[50;1H\033[K");
+    printf("Flags: S=%d Z=%d H=%d P=%d N=%d C=%d | Inst:%llu\n",
+           (regs->f >> 7) & 1, (regs->f >> 6) & 1, (regs->f >> 4) & 1,
+           (regs->f >> 2) & 1, (regs->f >> 1) & 1, regs->f & 1,
+           emulator->total_instructions);
+
+    // Show last few instructions
+    printf("\033[51;1H\033[K");
+    printf("Last instructions: ");
+    for (int i = 0; i < 5; i++)
+    {
+        int idx = (emulator->history_index - 5 + i + 10) % 10;
+        if (emulator->last_pc[idx] != 0 || i == 4)
+            printf("%04X:%02X ", emulator->last_pc[idx], emulator->last_opcode[idx]);
+    }
+
+    printf("\033[52;1H\033[K[PAUSED - Ctrl-P:resume | [:slower | ]:faster | Ctrl-D:dump]\033[52;1H");
+    fflush(stdout);
+}
+
+/**
+ * Detect CPU anomalies
+ */
+static void check_cpu_anomalies(spettrum_emulator_t *emulator)
+{
+    uint16_t pc = emulator->cpu->regs.pc;
+    uint16_t sp = emulator->cpu->regs.sp;
+
+    // PC in attribute area (usually wrong)
+    if (pc >= 0x5800 && pc < 0x5B00)
+    {
+        printf("\033[53;1H\033[K⚠️  WARNING: PC in attribute area (0x%04X)\n", pc);
+        fflush(stdout);
+    }
+
+    // Stack collision with screen memory
+    if (sp >= SPETTRUM_VRAM_START && sp < SPETTRUM_VRAM_START + SPETTRUM_VRAM_SIZE)
+    {
+        printf("\033[53;1H\033[K⚠️  WARNING: SP in video RAM (0x%04X)\n", sp);
+        fflush(stdout);
+    }
 }
 
 /**
@@ -115,6 +206,386 @@ static const char *decode_cb_instruction(uint8_t opcode)
 /**
  * Decode ED prefix instruction
  */
+static const char *decode_dd_instruction(uint8_t opcode, uint8_t *memory, uint16_t pc)
+{
+    static char buf[64];
+
+    switch (opcode)
+    {
+    case 0x09:
+        return "ADD IX, BC";
+    case 0x19:
+        return "ADD IX, DE";
+    case 0x21:
+        return "LD IX, nn";
+    case 0x22:
+        return "LD (nn), IX";
+    case 0x23:
+        return "INC IX";
+    case 0x24:
+        return "INC IXH";
+    case 0x25:
+        return "DEC IXH";
+    case 0x26:
+        return "LD IXH, n";
+    case 0x29:
+        return "ADD IX, IX";
+    case 0x2A:
+        return "LD IX, (nn)";
+    case 0x2B:
+        return "DEC IX";
+    case 0x2C:
+        return "INC IXL";
+    case 0x2D:
+        return "DEC IXL";
+    case 0x2E:
+        return "LD IXL, n";
+    case 0x34:
+        return "INC (IX+d)";
+    case 0x35:
+        return "DEC (IX+d)";
+    case 0x36:
+        return "LD (IX+d), n";
+    case 0x39:
+        return "ADD IX, SP";
+    case 0x44:
+        return "LD B, IXH";
+    case 0x45:
+        return "LD B, IXL";
+    case 0x46:
+        return "LD B, (IX+d)";
+    case 0x4C:
+        return "LD C, IXH";
+    case 0x4D:
+        return "LD C, IXL";
+    case 0x4E:
+        return "LD C, (IX+d)";
+    case 0x54:
+        return "LD D, IXH";
+    case 0x55:
+        return "LD D, IXL";
+    case 0x56:
+        return "LD D, (IX+d)";
+    case 0x5C:
+        return "LD E, IXH";
+    case 0x5D:
+        return "LD E, IXL";
+    case 0x5E:
+        return "LD E, (IX+d)";
+    case 0x60:
+        return "LD IXH, B";
+    case 0x61:
+        return "LD IXH, C";
+    case 0x62:
+        return "LD IXH, D";
+    case 0x63:
+        return "LD IXH, E";
+    case 0x64:
+        return "LD IXH, IXH";
+    case 0x65:
+        return "LD IXH, IXL";
+    case 0x66:
+        return "LD H, (IX+d)";
+    case 0x67:
+        return "LD IXH, A";
+    case 0x68:
+        return "LD IXL, B";
+    case 0x69:
+        return "LD IXL, C";
+    case 0x6A:
+        return "LD IXL, D";
+    case 0x6B:
+        return "LD IXL, E";
+    case 0x6C:
+        return "LD IXL, IXH";
+    case 0x6D:
+        return "LD IXL, IXL";
+    case 0x6E:
+        return "LD L, (IX+d)";
+    case 0x6F:
+        return "LD IXL, A";
+    case 0x70:
+        return "LD (IX+d), B";
+    case 0x71:
+        return "LD (IX+d), C";
+    case 0x72:
+        return "LD (IX+d), D";
+    case 0x73:
+        return "LD (IX+d), E";
+    case 0x74:
+        return "LD (IX+d), H";
+    case 0x75:
+        return "LD (IX+d), L";
+    case 0x77:
+        return "LD (IX+d), A";
+    case 0x7C:
+        return "LD A, IXH";
+    case 0x7D:
+        return "LD A, IXL";
+    case 0x7E:
+        return "LD A, (IX+d)";
+    case 0x84:
+        return "ADD A, IXH";
+    case 0x85:
+        return "ADD A, IXL";
+    case 0x86:
+        return "ADD A, (IX+d)";
+    case 0x8C:
+        return "ADC A, IXH";
+    case 0x8D:
+        return "ADC A, IXL";
+    case 0x8E:
+        return "ADC A, (IX+d)";
+    case 0x94:
+        return "SUB IXH";
+    case 0x95:
+        return "SUB IXL";
+    case 0x96:
+        return "SUB (IX+d)";
+    case 0x9C:
+        return "SBC A, IXH";
+    case 0x9D:
+        return "SBC A, IXL";
+    case 0x9E:
+        return "SBC A, (IX+d)";
+    case 0xA4:
+        return "AND IXH";
+    case 0xA5:
+        return "AND IXL";
+    case 0xA6:
+        return "AND (IX+d)";
+    case 0xAC:
+        return "XOR IXH";
+    case 0xAD:
+        return "XOR IXL";
+    case 0xAE:
+        return "XOR (IX+d)";
+    case 0xB4:
+        return "OR IXH";
+    case 0xB5:
+        return "OR IXL";
+    case 0xB6:
+        return "OR (IX+d)";
+    case 0xBC:
+        return "CP IXH";
+    case 0xBD:
+        return "CP IXL";
+    case 0xBE:
+        return "CP (IX+d)";
+    case 0xCB:
+        if (pc + 3 < SPETTRUM_TOTAL_MEMORY)
+        {
+            uint8_t bit_op = memory[pc + 3];
+            snprintf(buf, sizeof(buf), "DD CB (IX+d) %02X", bit_op);
+            return buf;
+        }
+        return "DD CB (IX bit ops)";
+    case 0xE1:
+        return "POP IX";
+    case 0xE3:
+        return "EX (SP), IX";
+    case 0xE5:
+        return "PUSH IX";
+    case 0xE9:
+        return "JP (IX)";
+    case 0xF9:
+        return "LD SP, IX";
+    default:
+        snprintf(buf, sizeof(buf), "DD %02X (unknown)", opcode);
+        return buf;
+    }
+}
+
+static const char *decode_fd_instruction(uint8_t opcode, uint8_t *memory, uint16_t pc)
+{
+    static char buf[64];
+
+    switch (opcode)
+    {
+    case 0x09:
+        return "ADD IY, BC";
+    case 0x19:
+        return "ADD IY, DE";
+    case 0x21:
+        return "LD IY, nn";
+    case 0x22:
+        return "LD (nn), IY";
+    case 0x23:
+        return "INC IY";
+    case 0x24:
+        return "INC IYH";
+    case 0x25:
+        return "DEC IYH";
+    case 0x26:
+        return "LD IYH, n";
+    case 0x29:
+        return "ADD IY, IY";
+    case 0x2A:
+        return "LD IY, (nn)";
+    case 0x2B:
+        return "DEC IY";
+    case 0x2C:
+        return "INC IYL";
+    case 0x2D:
+        return "DEC IYL";
+    case 0x2E:
+        return "LD IYL, n";
+    case 0x34:
+        return "INC (IY+d)";
+    case 0x35:
+        return "DEC (IY+d)";
+    case 0x36:
+        return "LD (IY+d), n";
+    case 0x39:
+        return "ADD IY, SP";
+    case 0x44:
+        return "LD B, IYH";
+    case 0x45:
+        return "LD B, IYL";
+    case 0x46:
+        return "LD B, (IY+d)";
+    case 0x4C:
+        return "LD C, IYH";
+    case 0x4D:
+        return "LD C, IYL";
+    case 0x4E:
+        return "LD C, (IY+d)";
+    case 0x54:
+        return "LD D, IYH";
+    case 0x55:
+        return "LD D, IYL";
+    case 0x56:
+        return "LD D, (IY+d)";
+    case 0x5C:
+        return "LD E, IYH";
+    case 0x5D:
+        return "LD E, IYL";
+    case 0x5E:
+        return "LD E, (IY+d)";
+    case 0x60:
+        return "LD IYH, B";
+    case 0x61:
+        return "LD IYH, C";
+    case 0x62:
+        return "LD IYH, D";
+    case 0x63:
+        return "LD IYH, E";
+    case 0x64:
+        return "LD IYH, IYH";
+    case 0x65:
+        return "LD IYH, IYL";
+    case 0x66:
+        return "LD H, (IY+d)";
+    case 0x67:
+        return "LD IYH, A";
+    case 0x68:
+        return "LD IYL, B";
+    case 0x69:
+        return "LD IYL, C";
+    case 0x6A:
+        return "LD IYL, D";
+    case 0x6B:
+        return "LD IYL, E";
+    case 0x6C:
+        return "LD IYL, IYH";
+    case 0x6D:
+        return "LD IYL, IYL";
+    case 0x6E:
+        return "LD L, (IY+d)";
+    case 0x6F:
+        return "LD IYL, A";
+    case 0x70:
+        return "LD (IY+d), B";
+    case 0x71:
+        return "LD (IY+d), C";
+    case 0x72:
+        return "LD (IY+d), D";
+    case 0x73:
+        return "LD (IY+d), E";
+    case 0x74:
+        return "LD (IY+d), H";
+    case 0x75:
+        return "LD (IY+d), L";
+    case 0x77:
+        return "LD (IY+d), A";
+    case 0x7C:
+        return "LD A, IYH";
+    case 0x7D:
+        return "LD A, IYL";
+    case 0x7E:
+        return "LD A, (IY+d)";
+    case 0x84:
+        return "ADD A, IYH";
+    case 0x85:
+        return "ADD A, IYL";
+    case 0x86:
+        return "ADD A, (IY+d)";
+    case 0x8C:
+        return "ADC A, IYH";
+    case 0x8D:
+        return "ADC A, IYL";
+    case 0x8E:
+        return "ADC A, (IY+d)";
+    case 0x94:
+        return "SUB IYH";
+    case 0x95:
+        return "SUB IYL";
+    case 0x96:
+        return "SUB (IY+d)";
+    case 0x9C:
+        return "SBC A, IYH";
+    case 0x9D:
+        return "SBC A, IYL";
+    case 0x9E:
+        return "SBC A, (IY+d)";
+    case 0xA4:
+        return "AND IYH";
+    case 0xA5:
+        return "AND IYL";
+    case 0xA6:
+        return "AND (IY+d)";
+    case 0xAC:
+        return "XOR IYH";
+    case 0xAD:
+        return "XOR IYL";
+    case 0xAE:
+        return "XOR (IY+d)";
+    case 0xB4:
+        return "OR IYH";
+    case 0xB5:
+        return "OR IYL";
+    case 0xB6:
+        return "OR (IY+d)";
+    case 0xBC:
+        return "CP IYH";
+    case 0xBD:
+        return "CP IYL";
+    case 0xBE:
+        return "CP (IY+d)";
+    case 0xCB:
+        if (pc + 3 < SPETTRUM_TOTAL_MEMORY)
+        {
+            uint8_t bit_op = memory[pc + 3];
+            snprintf(buf, sizeof(buf), "FD CB (IY+d) %02X", bit_op);
+            return buf;
+        }
+        return "FD CB (IY bit ops)";
+    case 0xE1:
+        return "POP IY";
+    case 0xE3:
+        return "EX (SP), IY";
+    case 0xE5:
+        return "PUSH IY";
+    case 0xE9:
+        return "JP (IY)";
+    case 0xF9:
+        return "LD SP, IY";
+    default:
+        snprintf(buf, sizeof(buf), "FD %02X (unknown)", opcode);
+        return buf;
+    }
+}
+
 static const char *decode_ed_instruction(uint8_t opcode)
 {
     static char buf[32];
@@ -748,8 +1219,12 @@ static void log_instruction_disassembly(spettrum_emulator_t *emulator, uint16_t 
         snprintf(instr_buf, sizeof(instr_buf), "CALL C, %04X", addr);
         break;
     case 0xDD:
-        snprintf(instr_buf, sizeof(instr_buf), "DD prefix (IX)");
+    {
+        uint8_t dd_opcode = (pc + 1 < SPETTRUM_TOTAL_MEMORY) ? emulator->memory[pc + 1] : 0;
+        const char *dd_instr = decode_dd_instruction(dd_opcode, emulator->memory, pc);
+        snprintf(instr_buf, sizeof(instr_buf), "DD %02X %s", dd_opcode, dd_instr);
         break;
+    }
     case 0xDE:
         snprintf(instr_buf, sizeof(instr_buf), "SBC A, %02X", operand);
         break;
@@ -848,8 +1323,12 @@ static void log_instruction_disassembly(spettrum_emulator_t *emulator, uint16_t 
         snprintf(instr_buf, sizeof(instr_buf), "CALL M, %04X", addr);
         break;
     case 0xFD:
-        snprintf(instr_buf, sizeof(instr_buf), "FD prefix (IY)");
+    {
+        uint8_t fd_opcode = (pc + 1 < SPETTRUM_TOTAL_MEMORY) ? emulator->memory[pc + 1] : 0;
+        const char *fd_instr = decode_fd_instruction(fd_opcode, emulator->memory, pc);
+        snprintf(instr_buf, sizeof(instr_buf), "FD %02X %s", fd_opcode, fd_instr);
         break;
+    }
     case 0xFE:
         snprintf(instr_buf, sizeof(instr_buf), "CP %02X", operand);
         break;
@@ -860,14 +1339,126 @@ static void log_instruction_disassembly(spettrum_emulator_t *emulator, uint16_t 
         // All cases handled - should never reach default
     }
 
-    // Format: PC: opcode instruction ; registers
-    fprintf(emulator->disasm_file, "%04X: %02X %-28s ; A=%02X F=%02X BC=%04X DE=%04X HL=%04X SP=%04X\n",
+    // Decode flags: S Z H P/V N C (uppercase = 1, lowercase = 0)
+    char flags[16];
+    snprintf(flags, sizeof(flags), "%c%c%c%c%c%c",
+             (regs.f & Z80_FLAG_S) ? 'S' : 's',
+             (regs.f & Z80_FLAG_Z) ? 'Z' : 'z',
+             (regs.f & Z80_FLAG_H) ? 'H' : 'h',
+             (regs.f & Z80_FLAG_PV) ? 'P' : 'p',
+             (regs.f & Z80_FLAG_N) ? 'N' : 'n',
+             (regs.f & Z80_FLAG_C) ? 'C' : 'c');
+
+    // Add memory access info for certain instructions
+    char mem_info[64] = "";
+    uint16_t bc = (regs.b << 8) | regs.c;
+    uint16_t de = (regs.d << 8) | regs.e;
+    uint16_t hl = (regs.h << 8) | regs.l;
+
+    switch (opcode)
+    {
+    // POP instructions - show what was popped
+    case 0xC1: // POP BC
+    case 0xD1: // POP DE
+    case 0xE1: // POP HL
+    case 0xF1: // POP AF
+    {
+        uint16_t val = emulator->memory[regs.sp] | (emulator->memory[regs.sp + 1] << 8);
+        snprintf(mem_info, sizeof(mem_info), " [SP]=%04X", val);
+        break;
+    }
+    // PUSH instructions - show what will be pushed
+    case 0xC5: // PUSH BC
+        snprintf(mem_info, sizeof(mem_info), " [SP-2]=%04X", bc);
+        break;
+    case 0xD5: // PUSH DE
+        snprintf(mem_info, sizeof(mem_info), " [SP-2]=%04X", de);
+        break;
+    case 0xE5: // PUSH HL
+        snprintf(mem_info, sizeof(mem_info), " [SP-2]=%04X", hl);
+        break;
+    case 0xF5: // PUSH AF
+        snprintf(mem_info, sizeof(mem_info), " [SP-2]=%04X", (regs.a << 8) | regs.f);
+        break;
+    // LD (addr), reg - show what's being written
+    case 0x02: // LD (BC), A
+        snprintf(mem_info, sizeof(mem_info), " [BC]=%02X", regs.a);
+        break;
+    case 0x12: // LD (DE), A
+        snprintf(mem_info, sizeof(mem_info), " [DE]=%02X", regs.a);
+        break;
+    case 0x32: // LD (nn), A
+        snprintf(mem_info, sizeof(mem_info), " [%04X]=%02X", addr, regs.a);
+        break;
+    case 0x36: // LD (HL), n
+        snprintf(mem_info, sizeof(mem_info), " [HL]=%02X", operand);
+        break;
+    case 0x70:
+    case 0x71:
+    case 0x72:
+    case 0x73: // LD (HL), r
+    case 0x74:
+    case 0x75:
+    case 0x77:
+    {
+        uint8_t val = 0;
+        switch (opcode & 0x07)
+        {
+        case 0:
+            val = regs.b;
+            break;
+        case 1:
+            val = regs.c;
+            break;
+        case 2:
+            val = regs.d;
+            break;
+        case 3:
+            val = regs.e;
+            break;
+        case 4:
+            val = regs.h;
+            break;
+        case 5:
+            val = regs.l;
+            break;
+        case 7:
+            val = regs.a;
+            break;
+        }
+        snprintf(mem_info, sizeof(mem_info), " [HL]=%02X", val);
+        break;
+    }
+    // LD reg, (addr) - show what's being read
+    case 0x0A: // LD A, (BC)
+        snprintf(mem_info, sizeof(mem_info), " [BC]=%02X", emulator->memory[bc]);
+        break;
+    case 0x1A: // LD A, (DE)
+        snprintf(mem_info, sizeof(mem_info), " [DE]=%02X", emulator->memory[de]);
+        break;
+    case 0x3A: // LD A, (nn)
+        snprintf(mem_info, sizeof(mem_info), " [%04X]=%02X", addr, emulator->memory[addr]);
+        break;
+    case 0x46:
+    case 0x4E:
+    case 0x56:
+    case 0x5E: // LD r, (HL)
+    case 0x66:
+    case 0x6E:
+    case 0x7E:
+        snprintf(mem_info, sizeof(mem_info), " [HL]=%02X", emulator->memory[hl]);
+        break;
+    }
+
+    // Format: PC: opcode instruction ; registers with decoded flags
+    fprintf(emulator->disasm_file, "%04X: %02X %-28s ; A=%02X F=%s BC=%04X DE=%04X HL=%04X IX=%04X IY=%04X SP=%04X%s\n",
             pc, opcode, instr_buf,
-            regs.a, regs.f,
-            (regs.b << 8) | regs.c,
-            (regs.d << 8) | regs.e,
-            (regs.h << 8) | regs.l,
-            regs.sp);
+            regs.a, flags,
+            bc, de, hl,
+            regs.ix,
+            regs.iy,
+            regs.sp,
+            mem_info);
     fflush(emulator->disasm_file);
 }
 
@@ -929,6 +1520,7 @@ static void print_help(const char *program_name)
     printf("  -d, --disk FILE         Load disk image from file\n");
     printf("  -i, --instructions NUM  Number of instructions to execute (0=unlimited, default=0)\n");
     printf("  -D, --disassemble FILE  Write disassembly to FILE\n");
+    printf("  -m, --render-mode MODE  Rendering mode: block (2x2) or braille (2x4, default)\n");
     printf("\n");
 }
 
@@ -947,6 +1539,11 @@ static uint8_t emulator_read_memory(void *user_data, uint16_t addr)
 static void emulator_write_memory(void *user_data, uint16_t addr, uint8_t value)
 {
     spettrum_emulator_t *emulator = (spettrum_emulator_t *)user_data;
+
+    // First 16KB (0x0000-0x3FFF) is ROM - ignore writes
+    if (addr < SPETTRUM_ROM_SIZE)
+        return;
+
     emulator->memory[addr] = value;
 }
 
@@ -987,7 +1584,7 @@ static void emulator_write_io(void *user_data, uint8_t port, uint8_t value)
 /**
  * Initialize emulator components
  */
-static spettrum_emulator_t *emulator_init(void)
+static spettrum_emulator_t *emulator_init(ula_render_mode_t render_mode)
 {
     spettrum_emulator_t *emulator = malloc(sizeof(spettrum_emulator_t));
     if (!emulator)
@@ -1015,7 +1612,7 @@ static spettrum_emulator_t *emulator_init(void)
     z80_set_io_callbacks(emulator->cpu, emulator_read_io, emulator_write_io, emulator);
 
     // Initialize ULA display
-    emulator->display = ula_init(SPECTRUM_WIDTH, SPECTRUM_HEIGHT);
+    emulator->display = ula_init(SPECTRUM_WIDTH, SPECTRUM_HEIGHT, render_mode);
     if (!emulator->display)
     {
         fprintf(stderr, "Error: Failed to initialize ULA display\n");
@@ -1112,7 +1709,7 @@ static int emulator_run(spettrum_emulator_t *emulator, uint64_t instructions_to_
         printf(" (limit: %llu instructions)", instructions_to_run);
     else
         printf(" (unlimited)");
-    printf("\nPress Ctrl+C to stop.\n\n");
+    printf("\nControls: Ctrl+P=pause | [/]=speed | Ctrl+S=step | Ctrl+D=debug | Ctrl+C=stop\n\n");
     fflush(stdout);
 
     // Initialize terminal for rendering
@@ -1131,6 +1728,84 @@ static int emulator_run(spettrum_emulator_t *emulator, uint64_t instructions_to_
     // Run Z80 CPU in main thread
     while (emulator->running && (instructions_to_run == 0 || instructions_executed < instructions_to_run))
     {
+        // Check for keyboard input
+        int key = check_keyboard_input();
+        if (key == 16) // Ctrl-P (ASCII 16)
+        {
+            if (emulator->step_mode)
+            {
+                // Exit step mode
+                emulator->step_mode = 0;
+                emulator->paused = 0;
+                printf("\033[49;1H\033[K\033[50;1H\033[K\033[51;1H\033[K\033[52;1H\033[K\033[53;1H\033[K");
+                printf("\033[48;1H\033[K[Running]\033[48;1H");
+                fflush(stdout);
+            }
+            else
+            {
+                emulator->paused = !emulator->paused;
+                if (emulator->paused)
+                {
+                    // Print pause message and debug info
+                    display_debug_info(emulator);
+                }
+                else
+                {
+                    printf("\033[49;1H\033[K\033[50;1H\033[K\033[51;1H\033[K\033[52;1H\033[K\033[53;1H\033[K");
+                    printf("\033[48;1H\033[K[Running]\033[48;1H");
+                    fflush(stdout);
+                }
+            }
+        }
+        else if (key == 4) // Ctrl-D (ASCII 4)
+        {
+            // Dump registers (works anytime, auto-pauses if not paused)
+            if (!emulator->paused)
+                emulator->paused = 1;
+            display_debug_info(emulator);
+        }
+        else if (key == 19) // Ctrl-S (ASCII 19)
+        {
+            // Toggle step mode or execute one step
+            if (!emulator->step_mode)
+            {
+                // Enter step mode
+                emulator->step_mode = 1;
+                emulator->paused = 0; // Will pause after next instruction
+                printf("\033[48;1H\033[K[STEP MODE - Ctrl-S:step | Ctrl-P:exit step mode]\033[48;1H");
+                fflush(stdout);
+            }
+            else
+            {
+                // Execute one instruction in step mode
+                emulator->paused = 0;
+            }
+        }
+        else if (key == '[')
+        {
+            emulator->speed_delay += 100;
+            if (emulator->speed_delay > 10000)
+                emulator->speed_delay = 10000;
+            printf("\033[48;1H\033[K[Speed delay: %d us]\033[48;1H", emulator->speed_delay);
+            fflush(stdout);
+        }
+        else if (key == ']')
+        {
+            emulator->speed_delay -= 100;
+            if (emulator->speed_delay < 0)
+                emulator->speed_delay = 0;
+            printf("\033[48;1H\033[K[Speed delay: %d us]\033[48;1H", emulator->speed_delay);
+            fflush(stdout);
+        }
+
+        // Skip execution if paused
+        if (emulator->paused)
+        {
+            usleep(10000); // Sleep 10ms while paused
+            continue;
+        }
+
+    execute_instruction:
         // Check if memory dump was requested
         if (emulator->dump_memory)
         {
@@ -1142,9 +1817,20 @@ static int emulator_run(spettrum_emulator_t *emulator, uint64_t instructions_to_
         uint16_t pc = emulator->cpu->regs.pc;
         uint8_t opcode = emulator->memory[pc];
 
+        // Record in history
+        emulator->last_pc[emulator->history_index] = pc;
+        emulator->last_opcode[emulator->history_index] = opcode;
+        emulator->history_index = (emulator->history_index + 1) % 10;
+
         // Execute a single instruction and accumulate cycles
         int instruction_cycles = z80_execute_instruction(emulator->cpu);
         emulator->cpu->total_cycles += instruction_cycles;
+
+        // Check for anomalies every 1000 instructions
+        if (emulator->total_instructions % 1000 == 0)
+        {
+            check_cpu_anomalies(emulator);
+        }
 
         // Log disassembly if enabled
         if (emulator->disasm_file)
@@ -1152,7 +1838,21 @@ static int emulator_run(spettrum_emulator_t *emulator, uint64_t instructions_to_
             log_instruction_disassembly(emulator, pc, opcode);
         }
 
+        emulator->total_instructions++;
         instructions_executed++;
+
+        // In step mode, pause after each instruction and show debug info
+        if (emulator->step_mode)
+        {
+            emulator->paused = 1;
+            display_debug_info(emulator);
+        }
+
+        // Apply speed delay if set
+        if (emulator->speed_delay > 0)
+        {
+            usleep(emulator->speed_delay);
+        }
     }
 
     // Signal render thread to stop
@@ -1186,7 +1886,8 @@ int main(int argc, char *argv[])
     const char *rom_file = NULL;
     const char *disk_file = NULL;
     const char *disasm_file = NULL;
-    uint64_t instructions_to_run = 0; // Default: unlimited
+    uint64_t instructions_to_run = 0;                      // Default: unlimited
+    ula_render_mode_t render_mode = ULA_RENDER_BRAILLE2X4; // Default: braille
 
     // Command-line options
     struct option long_options[] = {
@@ -1196,12 +1897,13 @@ int main(int argc, char *argv[])
         {"disk", required_argument, 0, 'd'},
         {"instructions", required_argument, 0, 'i'},
         {"disassemble", required_argument, 0, 'D'},
+        {"render-mode", required_argument, 0, 'm'},
         {0, 0, 0, 0}};
 
     // Parse command-line arguments
     int option_index = 0;
     int c;
-    while ((c = getopt_long(argc, argv, "hvr:d:i:D:", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "hvr:d:i:D:m:", long_options, &option_index)) != -1)
     {
         switch (c)
         {
@@ -1223,6 +1925,21 @@ int main(int argc, char *argv[])
         case 'D':
             disasm_file = optarg;
             break;
+        case 'm':
+            if (strcmp(optarg, "block") == 0 || strcmp(optarg, "2x2") == 0)
+            {
+                render_mode = ULA_RENDER_BLOCK2X2;
+            }
+            else if (strcmp(optarg, "braille") == 0 || strcmp(optarg, "2x4") == 0)
+            {
+                render_mode = ULA_RENDER_BRAILLE2X4;
+            }
+            else
+            {
+                fprintf(stderr, "Error: Invalid render mode '%s'. Use 'block' or 'braille'\n", optarg);
+                return EXIT_FAILURE;
+            }
+            break;
         case '?':
             // getopt_long already printed error message
             fprintf(stderr, "Try '%s --help' for more information.\n", argv[0]);
@@ -1242,7 +1959,7 @@ int main(int argc, char *argv[])
     }
 
     // Initialize emulator
-    spettrum_emulator_t *emulator = emulator_init();
+    spettrum_emulator_t *emulator = emulator_init(render_mode);
     if (!emulator)
     {
         fprintf(stderr, "Error: Failed to initialize emulator\n");
@@ -1251,6 +1968,17 @@ int main(int argc, char *argv[])
 
     // Initialize dump counter
     emulator->dump_count = 0;
+
+    // Initialize pause state and speed control
+    emulator->paused = 0;
+    emulator->speed_delay = 0;
+    emulator->step_mode = 0;
+
+    // Initialize debug tracking
+    memset(emulator->last_pc, 0, sizeof(emulator->last_pc));
+    memset(emulator->last_opcode, 0, sizeof(emulator->last_opcode));
+    emulator->history_index = 0;
+    emulator->total_instructions = 0;
 
     // Open disassembly file if specified
     if (disasm_file)

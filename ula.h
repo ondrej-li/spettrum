@@ -12,9 +12,22 @@
 #define SPECTRUM_ATTR_SIZE (32 * 24)
 #define SPECTRUM_RAM_SIZE (SPECTRUM_VRAM_SIZE + SPECTRUM_ATTR_SIZE)
 
+// Rendering modes
+typedef enum
+{
+    ULA_RENDER_BLOCK2X2 = 0,  // 2x2 block characters (128x96 output)
+    ULA_RENDER_BRAILLE2X4 = 1 // 2x4 braille characters (128x48 output)
+                              // Note: Braille mode has visual gaps between character rows
+                              // due to inherent braille character design (tactile, not graphic)
+} ula_render_mode_t;
+
 // Output matrix dimensions (2x2 pixels -> 1 character)
 #define OUTPUT_WIDTH (SPECTRUM_WIDTH / 2)
 #define OUTPUT_HEIGHT (SPECTRUM_HEIGHT / 2)
+
+// Braille output dimensions (2x4 pixels -> 1 character)
+#define BRAILLE_OUTPUT_WIDTH (SPECTRUM_WIDTH / 2)
+#define BRAILLE_OUTPUT_HEIGHT (SPECTRUM_HEIGHT / 4)
 
 // ULA display structure
 typedef struct
@@ -23,6 +36,7 @@ typedef struct
     int height;
     uint8_t vram[SPECTRUM_RAM_SIZE];
     uint8_t border_color;
+    ula_render_mode_t render_mode;
     pthread_mutex_t lock;
 } ula_t;
 
@@ -30,9 +44,10 @@ typedef struct
  * Initialize ULA display
  * @param width Display width in pixels
  * @param height Display height in pixels
+ * @param render_mode Rendering mode (ULA_RENDER_BLOCK2X2 or ULA_RENDER_BRAILLE2X4)
  * @return Pointer to ULA structure, or NULL on error
  */
-ula_t *ula_init(int width, int height);
+ula_t *ula_init(int width, int height, ula_render_mode_t render_mode);
 
 /**
  * Cleanup ULA display
@@ -73,8 +88,10 @@ uint8_t ula_read_vram(const ula_t *ula, uint16_t addr);
 /**
  * Convert entire video RAM to matrix
  * This is the core ULA conversion function
+ * @param vram Pointer to video RAM
+ * @param render_mode Rendering mode to use
  */
-void convert_vram_to_matrix(const uint8_t *vram);
+void convert_vram_to_matrix(const uint8_t *vram, ula_render_mode_t render_mode);
 
 /**
  * ULA thread function
