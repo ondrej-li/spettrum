@@ -95,7 +95,7 @@ z80_emulator_t *z80_init(void)
     // Initialize registers
     memset(&z80->regs, 0, sizeof(z80_registers_t));
     z80->regs.pc = 0x0000;
-    z80->regs.sp = 0xFFFF;
+    z80->regs.sp = 0x7FFF; // Stack at top of 48K user RAM (ZX Spectrum has 64K total: 16K ROM + 48K RAM)
     z80->regs.f = 0x00;
     z80->regs.im = 0;
 
@@ -3614,6 +3614,38 @@ static int z80_execute_instruction(z80_emulator_t *z80)
             break;
         }
 
+        // Undocumented: FD 0xB4: OR A, IYH - OR A with high byte of IY
+        case 0xB4:
+        {
+            uint8_t val = (z80->regs.iy >> 8) & 0xFF;
+            z80->regs.a |= val;
+            z80->regs.f = 0;
+            if (z80->regs.a == 0)
+                z80->regs.f |= Z80_FLAG_Z;
+            if (z80->regs.a & 0x80)
+                z80->regs.f |= Z80_FLAG_S;
+            if (calculate_parity(z80->regs.a))
+                z80->regs.f |= Z80_FLAG_PV;
+            cycles = 8;
+            break;
+        }
+
+        // Undocumented: FD 0xB5: OR A, IYL - OR A with low byte of IY
+        case 0xB5:
+        {
+            uint8_t val = z80->regs.iy & 0xFF;
+            z80->regs.a |= val;
+            z80->regs.f = 0;
+            if (z80->regs.a == 0)
+                z80->regs.f |= Z80_FLAG_Z;
+            if (z80->regs.a & 0x80)
+                z80->regs.f |= Z80_FLAG_S;
+            if (calculate_parity(z80->regs.a))
+                z80->regs.f |= Z80_FLAG_PV;
+            cycles = 8;
+            break;
+        }
+
         // FD 0xBE: CP A,(IY+d)
         case 0xBE:
         {
@@ -3706,6 +3738,54 @@ static int z80_execute_instruction(z80_emulator_t *z80)
         // FD 0x7D: LD A,IYL - Load A from low byte of IY
         case 0x7D:
             z80->regs.a = z80->regs.iy & 0xFF;
+            cycles = 8;
+            break;
+
+        // Undocumented: FD 0x60-0x6F: LD IYH/IYL, r - Load IY high/low byte from register
+        case 0x60: // LD IYH, B
+            z80->regs.iy = (z80->regs.iy & 0x00FF) | (z80->regs.b << 8);
+            cycles = 8;
+            break;
+        case 0x61: // LD IYH, C
+            z80->regs.iy = (z80->regs.iy & 0x00FF) | (z80->regs.c << 8);
+            cycles = 8;
+            break;
+        case 0x62: // LD IYH, D
+            z80->regs.iy = (z80->regs.iy & 0x00FF) | (z80->regs.d << 8);
+            cycles = 8;
+            break;
+        case 0x63: // LD IYH, E
+            z80->regs.iy = (z80->regs.iy & 0x00FF) | (z80->regs.e << 8);
+            cycles = 8;
+            break;
+        case 0x64: // LD IYH, IYH (NOP basically)
+            cycles = 8;
+            break;
+        case 0x65: // LD IYH, IYL
+            z80->regs.iy = (z80->regs.iy & 0x00FF) | ((z80->regs.iy & 0xFF) << 8);
+            cycles = 8;
+            break;
+        case 0x68: // LD IYL, B
+            z80->regs.iy = (z80->regs.iy & 0xFF00) | z80->regs.b;
+            cycles = 8;
+            break;
+        case 0x69: // LD IYL, C
+            z80->regs.iy = (z80->regs.iy & 0xFF00) | z80->regs.c;
+            cycles = 8;
+            break;
+        case 0x6A: // LD IYL, D
+            z80->regs.iy = (z80->regs.iy & 0xFF00) | z80->regs.d;
+            cycles = 8;
+            break;
+        case 0x6B: // LD IYL, E
+            z80->regs.iy = (z80->regs.iy & 0xFF00) | z80->regs.e;
+            cycles = 8;
+            break;
+        case 0x6C: // LD IYL, IYH
+            z80->regs.iy = (z80->regs.iy & 0xFF00) | ((z80->regs.iy >> 8) & 0xFF);
+            cycles = 8;
+            break;
+        case 0x6D: // LD IYL, IYL (NOP basically)
             cycles = 8;
             break;
 
@@ -3848,6 +3928,42 @@ static int z80_execute_instruction(z80_emulator_t *z80)
             cycles = 11;
             break;
         }
+
+        // Undocumented: DD 0x44: LD B, IXH - Load B from high byte of IX
+        case 0x44:
+            z80->regs.b = (z80->regs.ix >> 8) & 0xFF;
+            cycles = 8;
+            break;
+
+        // Undocumented: DD 0x45: LD B, IXL - Load B from low byte of IX
+        case 0x45:
+            z80->regs.b = z80->regs.ix & 0xFF;
+            cycles = 8;
+            break;
+
+        // Undocumented: DD 0x4C: LD C, IXH - Load C from high byte of IX
+        case 0x4C:
+            z80->regs.c = (z80->regs.ix >> 8) & 0xFF;
+            cycles = 8;
+            break;
+
+        // Undocumented: DD 0x4D: LD C, IXL - Load C from low byte of IX
+        case 0x4D:
+            z80->regs.c = z80->regs.ix & 0xFF;
+            cycles = 8;
+            break;
+
+        // Undocumented: DD 0x54: LD D, IXH - Load D from high byte of IX
+        case 0x54:
+            z80->regs.d = (z80->regs.ix >> 8) & 0xFF;
+            cycles = 8;
+            break;
+
+        // Undocumented: DD 0x55: LD D, IXL - Load D from low byte of IX
+        case 0x55:
+            z80->regs.d = z80->regs.ix & 0xFF;
+            cycles = 8;
+            break;
 
         // DD 0x7C: LD A,IXH - Load A from high byte of IX
         case 0x7C:
@@ -4058,6 +4174,54 @@ static int z80_execute_instruction(z80_emulator_t *z80)
             cycles = 19;
             break;
         }
+
+        // Undocumented: DD 0x60-0x6F: LD IXH/IXL, r - Load IX high/low byte from register
+        case 0x60: // LD IXH, B
+            z80->regs.ix = (z80->regs.ix & 0x00FF) | (z80->regs.b << 8);
+            cycles = 8;
+            break;
+        case 0x61: // LD IXH, C
+            z80->regs.ix = (z80->regs.ix & 0x00FF) | (z80->regs.c << 8);
+            cycles = 8;
+            break;
+        case 0x62: // LD IXH, D
+            z80->regs.ix = (z80->regs.ix & 0x00FF) | (z80->regs.d << 8);
+            cycles = 8;
+            break;
+        case 0x63: // LD IXH, E
+            z80->regs.ix = (z80->regs.ix & 0x00FF) | (z80->regs.e << 8);
+            cycles = 8;
+            break;
+        case 0x64: // LD IXH, IXH (NOP basically)
+            cycles = 8;
+            break;
+        case 0x65: // LD IXH, IXL
+            z80->regs.ix = (z80->regs.ix & 0x00FF) | ((z80->regs.ix & 0xFF) << 8);
+            cycles = 8;
+            break;
+        case 0x68: // LD IXL, B
+            z80->regs.ix = (z80->regs.ix & 0xFF00) | z80->regs.b;
+            cycles = 8;
+            break;
+        case 0x69: // LD IXL, C
+            z80->regs.ix = (z80->regs.ix & 0xFF00) | z80->regs.c;
+            cycles = 8;
+            break;
+        case 0x6A: // LD IXL, D
+            z80->regs.ix = (z80->regs.ix & 0xFF00) | z80->regs.d;
+            cycles = 8;
+            break;
+        case 0x6B: // LD IXL, E
+            z80->regs.ix = (z80->regs.ix & 0xFF00) | z80->regs.e;
+            cycles = 8;
+            break;
+        case 0x6C: // LD IXL, IXH
+            z80->regs.ix = (z80->regs.ix & 0xFF00) | ((z80->regs.ix >> 8) & 0xFF);
+            cycles = 8;
+            break;
+        case 0x6D: // LD IXL, IXL (NOP basically)
+            cycles = 8;
+            break;
 
         // Default DD instruction - not yet implemented
         default:

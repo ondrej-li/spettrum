@@ -51,6 +51,15 @@ typedef struct
     uint8_t last_opcode[10];     // Last 10 opcodes
     int history_index;           // Circular buffer index
     uint64_t total_instructions; // Total instructions executed
+
+    // Anomaly tracking
+    uint64_t warnings_pc_in_vram; // Count of PC in VRAM warnings
+    uint64_t warnings_sp_in_vram; // Count of SP in video RAM warnings
+    uint16_t last_warn_pc;        // Last PC that triggered VRAM warning
+    uint16_t last_warn_sp;        // Last SP that triggered VRAM warning
+    uint16_t warn_pc_history[5];  // Last 5 PC values before VRAM execution
+    uint16_t warn_sp_at_fault;    // SP value when PC-in-VRAM occurred
+    uint16_t warn_pc_at_sp_fault; // PC value when SP-in-VRAM occurred
 } spettrum_emulator_t;
 
 // Global emulator reference for signal handling
@@ -80,24 +89,6 @@ static void *ula_render_thread(void *arg)
  * Check for keyboard input (non-blocking)
  * Returns: character pressed, or -1 if none
  */
-static int check_keyboard_input(void)
-{
-    struct timeval tv;
-    fd_set fds;
-    tv.tv_sec = 0;
-    tv.tv_usec = 0;
-    FD_ZERO(&fds);
-    FD_SET(STDIN_FILENO, &fds);
-    select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
-    if (FD_ISSET(STDIN_FILENO, &fds))
-    {
-        char c;
-        if (read(STDIN_FILENO, &c, 1) == 1)
-            return c;
-    }
-    return -1;
-}
-
 /**
  * Display CPU state and debug info when paused
  */
@@ -140,19 +131,72 @@ static void check_cpu_anomalies(spettrum_emulator_t *emulator)
     uint16_t pc = emulator->cpu->regs.pc;
     uint16_t sp = emulator->cpu->regs.sp;
 
-    // PC in attribute area (usually wrong)
-    if (pc >= 0x5800 && pc < 0x5B00)
+    // PC executing in VRAM (bitmap or attributes - both wrong)
+    if (pc >= SPETTRUM_VRAM_START && pc < SPETTRUM_VRAM_START + SPETTRUM_VRAM_SIZE)
     {
-        printf("\033[53;1H\033[K⚠️  WARNING: PC in attribute area (0x%04X)\n", pc);
+        emulator->warnings_pc_in_vram++;
+        emulator->last_warn_pc = pc;
+        emulator->warn_sp_at_fault = sp;
+
+        // Save last 5 PC values from history
+        for (int i = 0; i < 5; i++)
+        {
+            int idx = (emulator->history_index - 5 + i + 10) % 10;
+            emulator->warn_pc_history[i] = emulator->last_pc[idx];
+        }
+
+        const char *area = (pc >= 0x5800) ? "attributes" : "bitmap";
+        printf("\033[53;1H\033[K⚠️  PC in VRAM %s (PC=0x%04X SP=0x%04X) [%llu times]\n",
+               area, pc, sp, emulator->warnings_pc_in_vram);
         fflush(stdout);
     }
 
     // Stack collision with screen memory
     if (sp >= SPETTRUM_VRAM_START && sp < SPETTRUM_VRAM_START + SPETTRUM_VRAM_SIZE)
     {
-        printf("\033[53;1H\033[K⚠️  WARNING: SP in video RAM (0x%04X)\n", sp);
+        emulator->warnings_sp_in_vram++;
+        emulator->last_warn_sp = sp;
+        emulator->warn_pc_at_sp_fault = pc;
+        printf("\033[53;1H\033[K⚠️  SP in VRAM (SP=0x%04X PC=0x%04X) [%llu times]\n",
+               sp, pc, emulator->warnings_sp_in_vram);
         fflush(stdout);
     }
+}
+
+/**
+ * Display CPU anomaly summary
+ */
+static void display_anomaly_summary(spettrum_emulator_t *emulator)
+{
+    if (!emulator)
+        return;
+
+    printf("\n\n=== CPU Anomaly Summary ===\n");
+    if (emulator->warnings_pc_in_vram > 0)
+    {
+        printf("⚠️  PC in VRAM: %llu occurrences\n", emulator->warnings_pc_in_vram);
+        printf("   Last fault: PC=0x%04X, SP=0x%04X\n",
+               emulator->last_warn_pc, emulator->warn_sp_at_fault);
+        printf("   PC history before fault: ");
+        for (int i = 0; i < 5; i++)
+        {
+            if (emulator->warn_pc_history[i] != 0 || i == 4)
+                printf("0x%04X ", emulator->warn_pc_history[i]);
+        }
+        printf("-> 0x%04X\n", emulator->last_warn_pc);
+    }
+    if (emulator->warnings_sp_in_vram > 0)
+    {
+        printf("⚠️  SP in VRAM: %llu occurrences\n", emulator->warnings_sp_in_vram);
+        printf("   Last fault: SP=0x%04X, PC=0x%04X\n",
+               emulator->last_warn_sp, emulator->warn_pc_at_sp_fault);
+    }
+    if (emulator->warnings_pc_in_vram == 0 && emulator->warnings_sp_in_vram == 0)
+    {
+        printf("✓ No CPU anomalies detected\n");
+    }
+    printf("Total instructions executed: %llu\n", emulator->total_instructions);
+    fflush(stdout);
 }
 
 /**
@@ -162,7 +206,10 @@ static void signal_handler(int sig)
 {
     (void)sig; // Unused
     if (g_emulator)
+    {
         g_emulator->running = 0;
+        display_anomaly_summary(g_emulator);
+    }
 }
 
 /**
@@ -1548,37 +1595,11 @@ static void emulator_write_memory(void *user_data, uint16_t addr, uint8_t value)
 }
 
 /**
- * I/O read callback for Z80 CPU
+ * I/O write callback for Z80 CPU - not implemented
  */
-static uint8_t emulator_read_io(void *user_data, uint8_t port)
+static void emulator_write_io(void *user_data __attribute__((unused)), uint8_t port __attribute__((unused)), uint8_t value __attribute__((unused)))
 {
-    spettrum_emulator_t *emulator = (spettrum_emulator_t *)user_data;
-
-    // Port 0xFE is the ULA port (lower 3 bits for border color, bit 3 for mic/speaker)
-    if (port == 0xFE)
-    {
-        // Return ULA state (border color in bits 0-2)
-        return ula_get_border_color(emulator->display);
-    }
-
-    // Other ports return 0xFF (typical for unused ports)
-    return 0xFF;
-}
-
-/**
- * I/O write callback for Z80 CPU
- */
-static void emulator_write_io(void *user_data, uint8_t port, uint8_t value)
-{
-    spettrum_emulator_t *emulator = (spettrum_emulator_t *)user_data;
-
-    // Port 0xFE is the ULA port (lower 3 bits for border color, bit 3 for mic/speaker)
-    if (port == 0xFE)
-    {
-        // Update ULA border color from bits 0-2
-        uint8_t border_color = value & 0x07;
-        ula_set_border_color(emulator->display, border_color);
-    }
+    // I/O write handling removed
 }
 
 /**
@@ -1609,7 +1630,7 @@ static spettrum_emulator_t *emulator_init(ula_render_mode_t render_mode)
     z80_set_memory_callbacks(emulator->cpu, emulator_read_memory, emulator_write_memory, emulator);
 
     // Set I/O callbacks
-    z80_set_io_callbacks(emulator->cpu, emulator_read_io, emulator_write_io, emulator);
+    z80_set_io_callbacks(emulator->cpu, NULL, emulator_write_io, emulator);
 
     // Initialize ULA display
     emulator->display = ula_init(SPECTRUM_WIDTH, SPECTRUM_HEIGHT, render_mode);
@@ -1728,8 +1749,9 @@ static int emulator_run(spettrum_emulator_t *emulator, uint64_t instructions_to_
     // Run Z80 CPU in main thread
     while (emulator->running && (instructions_to_run == 0 || instructions_executed < instructions_to_run))
     {
-        // Check for keyboard input
-        int key = check_keyboard_input();
+        // Check for control keys (keyboard input removed)
+        int key = -1;
+
         if (key == 16) // Ctrl-P (ASCII 16)
         {
             if (emulator->step_mode)
@@ -1805,7 +1827,6 @@ static int emulator_run(spettrum_emulator_t *emulator, uint64_t instructions_to_
             continue;
         }
 
-    execute_instruction:
         // Check if memory dump was requested
         if (emulator->dump_memory)
         {
@@ -1980,6 +2001,15 @@ int main(int argc, char *argv[])
     emulator->history_index = 0;
     emulator->total_instructions = 0;
 
+    // Initialize anomaly tracking
+    emulator->warnings_pc_in_vram = 0;
+    emulator->warnings_sp_in_vram = 0;
+    emulator->last_warn_pc = 0;
+    emulator->last_warn_sp = 0;
+    memset(emulator->warn_pc_history, 0, sizeof(emulator->warn_pc_history));
+    emulator->warn_sp_at_fault = 0;
+    emulator->warn_pc_at_sp_fault = 0;
+
     // Open disassembly file if specified
     if (disasm_file)
     {
@@ -2023,6 +2053,9 @@ int main(int argc, char *argv[])
 
     // Run emulation
     int result = emulator_run(emulator, instructions_to_run);
+
+    // Display anomaly summary
+    display_anomaly_summary(emulator);
 
     // Cleanup
     emulator_cleanup(emulator);
