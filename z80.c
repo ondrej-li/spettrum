@@ -5,39 +5,11 @@
 #include <stdio.h>
 #include <time.h>
 #include <stdlib.h>
+#include "z80.h"
 
 // Z80 Configuration
 #define Z80_CLOCK_FREQ 3500000 // 3.5 MHz
 #define Z80_MAX_MEMORY 65536   // 64KB address space
-
-// Z80 Register file
-typedef struct
-{
-    uint16_t pc; // Program counter
-    uint16_t sp; // Stack pointer
-    uint16_t ix; // Index register X
-    uint16_t iy; // Index register Y
-
-    // Main registers (AF, BC, DE, HL)
-    uint8_t a, f; // Accumulator and flags
-    uint8_t b, c; // BC register pair
-    uint8_t d, e; // DE register pair
-    uint8_t h, l; // HL register pair
-
-    // Alternate registers (AF', BC', DE', HL')
-    uint8_t a_alt, f_alt;
-    uint8_t b_alt, c_alt;
-    uint8_t d_alt, e_alt;
-    uint8_t h_alt, l_alt;
-
-    // Special registers
-    uint8_t i; // Interrupt vector
-    uint8_t r; // Memory refresh
-
-    // Interrupt/control
-    uint8_t im;         // Interrupt mode (0, 1, or 2)
-    uint8_t iff1, iff2; // Interrupt flip-flops
-} z80_registers_t;
 
 // Z80 Flags (F register bits)
 #define Z80_FLAG_C 0x01  // Carry
@@ -46,41 +18,6 @@ typedef struct
 #define Z80_FLAG_H 0x10  // Half-carry
 #define Z80_FLAG_Z 0x40  // Zero
 #define Z80_FLAG_S 0x80  // Sign
-
-// Context holder for both memory and I/O callbacks
-typedef struct
-{
-    void *memory_data;
-    void *io_data;
-} z80_callback_context_t;
-
-// Z80 Emulator state
-typedef struct
-{
-    z80_registers_t regs;
-
-    // Thread state
-    pthread_t thread;
-    volatile int running;
-    volatile int paused;
-    volatile int halted;
-    pthread_mutex_t state_lock;
-    pthread_cond_t state_cond;
-
-    // Timing
-    struct timespec last_cycle_time;
-    uint64_t total_cycles;
-
-    // I/O and memory callbacks (pluggable)
-    uint8_t (*read_io)(void *user_data, uint8_t port);
-    void (*write_io)(void *user_data, uint8_t port, uint8_t value);
-    uint8_t (*read_memory)(void *user_data, uint16_t addr);
-    void (*write_memory)(void *user_data, uint16_t addr, uint8_t value);
-    void *user_data;
-} z80_emulator_t;
-
-// Global emulator instance
-static z80_emulator_t *g_z80 = NULL;
 
 /**
  * Initialize Z80 emulator
@@ -115,6 +52,13 @@ z80_emulator_t *z80_init(void)
     z80->read_memory = NULL;
     z80->write_memory = NULL;
     z80->user_data = NULL;
+
+    // Initialize port-specific callbacks
+    for (int i = 0; i < Z80_IO_PORTS; i++)
+    {
+        z80->port_callbacks[i].read_fn = NULL;
+        z80->port_callbacks[i].write_fn = NULL;
+    }
 
     return z80;
 }
@@ -151,8 +95,8 @@ void z80_cleanup(z80_emulator_t *z80)
  * Set I/O callbacks for pluggable I/O
  */
 void z80_set_io_callbacks(z80_emulator_t *z80,
-                          uint8_t (*read_io)(void *user_data, uint8_t port),
-                          void (*write_io)(void *user_data, uint8_t port, uint8_t value),
+                          z80_read_io_t read_io,
+                          z80_write_io_t write_io,
                           void *user_data)
 {
     if (!z80)
@@ -183,8 +127,8 @@ void z80_set_io_callbacks(z80_emulator_t *z80,
  * Set memory callbacks for pluggable RAM/ROM
  */
 void z80_set_memory_callbacks(z80_emulator_t *z80,
-                              uint8_t (*read_memory)(void *user_data, uint16_t addr),
-                              void (*write_memory)(void *user_data, uint16_t addr, uint8_t value),
+                              z80_read_memory_t read_memory,
+                              z80_write_memory_t write_memory,
                               void *user_data)
 {
     if (!z80)
@@ -209,6 +153,32 @@ void z80_set_memory_callbacks(z80_emulator_t *z80,
 
     z80->read_memory = read_memory;
     z80->write_memory = write_memory;
+}
+
+/**
+ * Register port-specific IN callback
+ */
+void z80_register_port_in(z80_emulator_t *z80,
+                          uint8_t port,
+                          z80_read_io_t read_fn)
+{
+    if (!z80 || !read_fn)
+        return;
+
+    z80->port_callbacks[port].read_fn = read_fn;
+}
+
+/**
+ * Register port-specific OUT callback
+ */
+void z80_register_port_out(z80_emulator_t *z80,
+                           uint8_t port,
+                           z80_write_io_t write_fn)
+{
+    if (!z80 || !write_fn)
+        return;
+
+    z80->port_callbacks[port].write_fn = write_fn;
 }
 
 /**
@@ -251,6 +221,13 @@ static void z80_write_memory_internal(z80_emulator_t *z80, uint16_t addr, uint8_
  */
 static uint8_t z80_read_io_internal(z80_emulator_t *z80, uint8_t port)
 {
+    // Check for port-specific callback first
+    if (z80->port_callbacks[port].read_fn)
+    {
+        return z80->port_callbacks[port].read_fn(NULL, port);
+    }
+
+    // Fall back to generic I/O callback
     if (z80->read_io)
     {
         void *io_data = z80->user_data;
@@ -269,6 +246,14 @@ static uint8_t z80_read_io_internal(z80_emulator_t *z80, uint8_t port)
  */
 static void z80_write_io_internal(z80_emulator_t *z80, uint8_t port, uint8_t value)
 {
+    // Check for port-specific callback first
+    if (z80->port_callbacks[port].write_fn)
+    {
+        z80->port_callbacks[port].write_fn(NULL, port, value);
+        return;
+    }
+
+    // Fall back to generic I/O callback
     if (z80->write_io)
     {
         void *io_data = z80->user_data;
@@ -383,7 +368,7 @@ static int calculate_overflow_sub(uint8_t a, uint8_t b, uint8_t result)
  * Execute a single Z80 instruction
  * Returns number of clock cycles for this instruction
  */
-static int z80_execute_instruction(z80_emulator_t *z80)
+int z80_execute_instruction(z80_emulator_t *z80)
 {
     uint8_t opcode = z80_read_memory_internal(z80, z80->regs.pc);
     z80->regs.pc++;

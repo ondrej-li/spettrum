@@ -7,18 +7,18 @@ OBJ_DIR = obj
 BIN_DIR = bin
 
 TARGET = $(BIN_DIR)/spettrum
-DEMO = $(BIN_DIR)/demo
 ULA_OBJ = $(OBJ_DIR)/ula.o
+DISASM_OBJ = $(OBJ_DIR)/disasm.o
 Z80_OBJ = $(OBJ_DIR)/z80.o
 SOURCES = $(wildcard $(SRC_DIR)/*.c)
 OBJECTS = $(SOURCES:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
 
-.PHONY: all clean test demo run-demo run
+.PHONY: all clean test run
 
-all: $(TARGET) $(DEMO)
+all: $(TARGET)
 
-$(TARGET): main.c $(ULA_OBJ) | $(BIN_DIR)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ main.c $(ULA_OBJ)
+$(TARGET): main.c $(Z80_OBJ) $(ULA_OBJ) $(DISASM_OBJ) | $(BIN_DIR)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ main.c $(Z80_OBJ) $(ULA_OBJ) $(DISASM_OBJ)
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -32,24 +32,17 @@ $(OBJ_DIR):
 run: $(TARGET)
 	$(TARGET)
 
-run-spettrum: $(TARGET)
-	$(TARGET)
-
 spettrum-version: $(TARGET)
 	$(TARGET) --version
-
-demo: $(DEMO)
 
 $(ULA_OBJ): ula.c ula.h | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -c -o $@ ula.c
 
-$(DEMO): demo.c $(ULA_OBJ) | $(BIN_DIR)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ demo.c $(ULA_OBJ)
+$(Z80_OBJ): z80.c z80.h | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -c -o $@ z80.c
 
-run-demo: $(DEMO)
-	$(DEMO)
-
-run: run-demo
+$(DISASM_OBJ): disasm.c disasm.h | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -c -o $@ disasm.c
 
 test:
 	$(MAKE) -C tests run

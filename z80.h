@@ -10,10 +10,12 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <pthread.h>
 
 // Z80 Configuration
 #define Z80_CLOCK_FREQ 3500000 // 3.5 MHz
 #define Z80_MAX_MEMORY 65536   // 64KB address space
+#define Z80_IO_PORTS 256       // Number of I/O ports
 
 // Z80 Register file
 typedef struct
@@ -44,6 +46,56 @@ typedef struct
     uint8_t iff1, iff2; // Interrupt flip-flops
 } z80_registers_t;
 
+// Function pointer types for I/O callbacks
+typedef uint8_t (*z80_read_io_t)(void *user_data, uint8_t port);
+typedef void (*z80_write_io_t)(void *user_data, uint8_t port, uint8_t value);
+
+// Function pointer types for memory callbacks
+typedef uint8_t (*z80_read_memory_t)(void *user_data, uint16_t addr);
+typedef void (*z80_write_memory_t)(void *user_data, uint16_t addr, uint8_t value);
+
+// Context holder for both memory and I/O callbacks
+typedef struct
+{
+    void *memory_data;
+    void *io_data;
+} z80_callback_context_t;
+
+// Port-specific I/O callback structure
+typedef struct
+{
+    z80_read_io_t read_fn;   // Callback for IN instruction
+    z80_write_io_t write_fn; // Callback for OUT instruction
+} z80_port_callback_t;
+
+// Z80 Emulator state
+typedef struct
+{
+    z80_registers_t regs;
+
+    // Thread state
+    pthread_t thread;
+    volatile int running;
+    volatile int paused;
+    volatile int halted;
+    pthread_mutex_t state_lock;
+    pthread_cond_t state_cond;
+
+    // Timing
+    struct timespec last_cycle_time;
+    uint64_t total_cycles;
+
+    // I/O and memory callbacks (pluggable)
+    z80_read_io_t read_io;
+    z80_write_io_t write_io;
+    z80_read_memory_t read_memory;
+    z80_write_memory_t write_memory;
+    void *user_data;
+
+    // Port-specific I/O callbacks
+    z80_port_callback_t port_callbacks[Z80_IO_PORTS];
+} z80_emulator_t;
+
 // Z80 Flags (F register bits)
 #define Z80_FLAG_C 0x01  // Carry
 #define Z80_FLAG_N 0x02  // Subtract
@@ -51,31 +103,6 @@ typedef struct
 #define Z80_FLAG_H 0x10  // Half-carry
 #define Z80_FLAG_Z 0x40  // Zero
 #define Z80_FLAG_S 0x80  // Sign
-
-// Z80 Emulator state
-typedef struct z80_emulator
-{
-    // Registers - public read-only via z80_get_register
-    z80_registers_t regs;
-
-    // Thread state (internal)
-    void *thread;
-    volatile int running;
-    volatile int paused;
-    void *state_lock;
-    void *state_cond;
-
-    // Timing
-    struct timespec last_cycle_time;
-    uint64_t total_cycles;
-
-    // I/O and memory callbacks (pluggable)
-    uint8_t (*read_io)(void *user_data, uint8_t port);
-    void (*write_io)(void *user_data, uint8_t port, uint8_t value);
-    uint8_t (*read_memory)(void *user_data, uint16_t addr);
-    void (*write_memory)(void *user_data, uint16_t addr, uint8_t value);
-    void *user_data;
-} z80_emulator_t;
 
 /**
  * Initialize Z80 emulator
@@ -97,8 +124,8 @@ void z80_cleanup(z80_emulator_t *z80);
  * @param user_data User data passed to callbacks
  */
 void z80_set_memory_callbacks(z80_emulator_t *z80,
-                              uint8_t (*read_fn)(void *, uint16_t),
-                              void (*write_fn)(void *, uint16_t, uint8_t),
+                              z80_read_memory_t read_fn,
+                              z80_write_memory_t write_fn,
                               void *user_data);
 
 /**
@@ -109,9 +136,31 @@ void z80_set_memory_callbacks(z80_emulator_t *z80,
  * @param user_data User data passed to callbacks
  */
 void z80_set_io_callbacks(z80_emulator_t *z80,
-                          uint8_t (*read_fn)(void *, uint8_t),
-                          void (*write_fn)(void *, uint8_t, uint8_t),
+                          z80_read_io_t read_fn,
+                          z80_write_io_t write_fn,
                           void *user_data);
+
+/**
+ * Register port-specific IN callback
+ * Called when CPU executes IN instruction for a specific port
+ * @param z80 Emulator instance
+ * @param port Port number (0-255)
+ * @param read_fn Callback function that returns the port value
+ */
+void z80_register_port_in(z80_emulator_t *z80,
+                          uint8_t port,
+                          z80_read_io_t read_fn);
+
+/**
+ * Register port-specific OUT callback
+ * Called when CPU executes OUT instruction for a specific port
+ * @param z80 Emulator instance
+ * @param port Port number (0-255)
+ * @param write_fn Callback function that handles the written value
+ */
+void z80_register_port_out(z80_emulator_t *z80,
+                           uint8_t port,
+                           z80_write_io_t write_fn);
 
 /**
  * Execute a single Z80 instruction
@@ -191,7 +240,7 @@ void z80_resume(z80_emulator_t *z80);
  * @param buffer_size Size of output buffer
  * @return Bytes written, or negative on error
  */
-int z80_save_state(z80_emulator_t *z80, uint8_t *buffer, size_t buffer_size);
+size_t z80_save_state(z80_emulator_t *z80, uint8_t *buffer, size_t buffer_size);
 
 /**
  * Load emulator state
