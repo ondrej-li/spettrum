@@ -3774,6 +3774,128 @@ int z80_execute_instruction(z80_emulator_t *z80)
             cycles = 8;
             break;
 
+        // FD 0x3C: INC A
+        case 0x3C:
+        {
+            result = z80->regs.a + 1;
+            z80->regs.f = (z80->regs.f & Z80_FLAG_C);
+            if ((uint8_t)result == 0)
+                z80->regs.f |= Z80_FLAG_Z;
+            if ((uint8_t)result & 0x80)
+                z80->regs.f |= Z80_FLAG_S;
+            if (calculate_half_carry_add(z80->regs.a, 1))
+                z80->regs.f |= Z80_FLAG_H;
+            if (z80->regs.a == 0x7F)
+                z80->regs.f |= Z80_FLAG_PV;
+            z80->regs.a = (uint8_t)result;
+            cycles = 4;
+            break;
+        }
+
+        // FD 0x3D: DEC A
+        case 0x3D:
+        {
+            result = z80->regs.a - 1;
+            z80->regs.f = (z80->regs.f & Z80_FLAG_C) | Z80_FLAG_N;
+            if ((uint8_t)result == 0)
+                z80->regs.f |= Z80_FLAG_Z;
+            if ((uint8_t)result & 0x80)
+                z80->regs.f |= Z80_FLAG_S;
+            if (calculate_half_carry_sub(z80->regs.a, 1))
+                z80->regs.f |= Z80_FLAG_H;
+            if (z80->regs.a == 0x80)
+                z80->regs.f |= Z80_FLAG_PV;
+            z80->regs.a = (uint8_t)result;
+            cycles = 4;
+            break;
+        }
+
+        // FD 0x67: LD IYH,A
+        case 0x67:
+            z80->regs.iy = (z80->regs.iy & 0x00FF) | (z80->regs.a << 8);
+            cycles = 8;
+            break;
+
+        // FD 0x6F: LD IYL,A
+        case 0x6F:
+            z80->regs.iy = (z80->regs.iy & 0xFF00) | z80->regs.a;
+            cycles = 8;
+            break;
+
+        // FD 0x44: LD B,IYH
+        case 0x44:
+            z80->regs.b = (z80->regs.iy >> 8) & 0xFF;
+            cycles = 8;
+            break;
+
+        // FD 0x45: LD B,IYL
+        case 0x45:
+            z80->regs.b = z80->regs.iy & 0xFF;
+            cycles = 8;
+            break;
+
+        // FD 0x4C: LD C,IYH
+        case 0x4C:
+            z80->regs.c = (z80->regs.iy >> 8) & 0xFF;
+            cycles = 8;
+            break;
+
+        // FD 0x4D: LD C,IYL
+        case 0x4D:
+            z80->regs.c = z80->regs.iy & 0xFF;
+            cycles = 8;
+            break;
+
+        // FD 0x5C: LD E,IYH
+        case 0x5C:
+            z80->regs.e = (z80->regs.iy >> 8) & 0xFF;
+            cycles = 8;
+            break;
+
+        // FD 0x09: ADD IY,BC
+        case 0x09:
+        {
+            uint16_t bc = (z80->regs.b << 8) | z80->regs.c;
+            uint32_t result_32 = (uint32_t)z80->regs.iy + (uint32_t)bc;
+            z80->regs.f = (z80->regs.f & ~(Z80_FLAG_N | Z80_FLAG_C | Z80_FLAG_H));
+            if (result_32 & 0x10000)
+                z80->regs.f |= Z80_FLAG_C;
+            if (((z80->regs.iy & 0x0FFF) + (bc & 0x0FFF)) & 0x1000)
+                z80->regs.f |= Z80_FLAG_H;
+            z80->regs.iy = (uint16_t)result_32;
+            cycles = 15;
+            break;
+        }
+
+        // FD 0x19: ADD IY,DE
+        case 0x19:
+        {
+            uint16_t de = (z80->regs.d << 8) | z80->regs.e;
+            uint32_t result_32 = (uint32_t)z80->regs.iy + (uint32_t)de;
+            z80->regs.f = (z80->regs.f & ~(Z80_FLAG_N | Z80_FLAG_C | Z80_FLAG_H));
+            if (result_32 & 0x10000)
+                z80->regs.f |= Z80_FLAG_C;
+            if (((z80->regs.iy & 0x0FFF) + (de & 0x0FFF)) & 0x1000)
+                z80->regs.f |= Z80_FLAG_H;
+            z80->regs.iy = (uint16_t)result_32;
+            cycles = 15;
+            break;
+        }
+
+        // FD 0x39: ADD IY,SP
+        case 0x39:
+        {
+            uint32_t result_32 = (uint32_t)z80->regs.iy + (uint32_t)z80->regs.sp;
+            z80->regs.f = (z80->regs.f & ~(Z80_FLAG_N | Z80_FLAG_C | Z80_FLAG_H));
+            if (result_32 & 0x10000)
+                z80->regs.f |= Z80_FLAG_C;
+            if (((z80->regs.iy & 0x0FFF) + (z80->regs.sp & 0x0FFF)) & 0x1000)
+                z80->regs.f |= Z80_FLAG_H;
+            z80->regs.iy = (uint16_t)result_32;
+            cycles = 15;
+            break;
+        }
+
         // Default FD instruction - not yet implemented
         default:
         {
@@ -3914,37 +4036,37 @@ int z80_execute_instruction(z80_emulator_t *z80)
             break;
         }
 
-        // Undocumented: DD 0x44: LD B, IXH - Load B from high byte of IX
+        // DD 0x44: LD B,IXH - Load B from high byte of IX
         case 0x44:
             z80->regs.b = (z80->regs.ix >> 8) & 0xFF;
             cycles = 8;
             break;
 
-        // Undocumented: DD 0x45: LD B, IXL - Load B from low byte of IX
+        // DD 0x45: LD B,IXL - Load B from low byte of IX
         case 0x45:
             z80->regs.b = z80->regs.ix & 0xFF;
             cycles = 8;
             break;
 
-        // Undocumented: DD 0x4C: LD C, IXH - Load C from high byte of IX
+        // DD 0x4C: LD C,IXH - Load C from high byte of IX
         case 0x4C:
             z80->regs.c = (z80->regs.ix >> 8) & 0xFF;
             cycles = 8;
             break;
 
-        // Undocumented: DD 0x4D: LD C, IXL - Load C from low byte of IX
+        // DD 0x4D: LD C,IXL - Load C from low byte of IX
         case 0x4D:
             z80->regs.c = z80->regs.ix & 0xFF;
             cycles = 8;
             break;
 
-        // Undocumented: DD 0x54: LD D, IXH - Load D from high byte of IX
+        // DD 0x54: LD D,IXH - Load D from high byte of IX
         case 0x54:
             z80->regs.d = (z80->regs.ix >> 8) & 0xFF;
             cycles = 8;
             break;
 
-        // Undocumented: DD 0x55: LD D, IXL - Load D from low byte of IX
+        // DD 0x55: LD D,IXL - Load D from low byte of IX
         case 0x55:
             z80->regs.d = z80->regs.ix & 0xFF;
             cycles = 8;
@@ -3962,6 +4084,12 @@ int z80_execute_instruction(z80_emulator_t *z80)
             cycles = 8;
             break;
 
+        // DD 0x5D: LD E,IXL - Load E from low byte of IX
+        case 0x5D:
+            z80->regs.e = z80->regs.ix & 0xFF;
+            cycles = 8;
+            break;
+
         // DD 0x67: LD IXH,A - Load high byte of IX from A
         case 0x67:
             z80->regs.ix = (z80->regs.ix & 0x00FF) | (z80->regs.a << 8);
@@ -3973,6 +4101,17 @@ int z80_execute_instruction(z80_emulator_t *z80)
             z80->regs.ix = (z80->regs.ix & 0xFF00) | z80->regs.a;
             cycles = 8;
             break;
+
+        // DD 0x6E: LD IXL,(IX+d) - Load low byte of IX from memory at IX+displacement
+        case 0x6E:
+        {
+            int8_t displacement = (int8_t)z80_read_memory_internal(z80, z80->regs.pc++);
+            uint16_t addr = z80->regs.ix + displacement;
+            uint8_t value = z80_read_memory_internal(z80, addr);
+            z80->regs.ix = (z80->regs.ix & 0xFF00) | value;
+            cycles = 19;
+            break;
+        }
 
         // DD 0x7D: LD A,IXL - Load A from low byte of IX
         case 0x7D:
@@ -4003,6 +4142,21 @@ int z80_execute_instruction(z80_emulator_t *z80)
             break;
         }
 
+        // DD 0x19: ADD IX,DE
+        case 0x19:
+        {
+            uint16_t de = (z80->regs.d << 8) | z80->regs.e;
+            uint32_t result_32 = (uint32_t)z80->regs.ix + (uint32_t)de;
+            z80->regs.f = (z80->regs.f & ~(Z80_FLAG_N | Z80_FLAG_C | Z80_FLAG_H));
+            if (result_32 & 0x10000)
+                z80->regs.f |= Z80_FLAG_C;
+            if (((z80->regs.ix & 0x0FFF) + (de & 0x0FFF)) & 0x1000)
+                z80->regs.f |= Z80_FLAG_H;
+            z80->regs.ix = (uint16_t)result_32;
+            cycles = 15;
+            break;
+        }
+
         // DD 0x29: ADD IX,IX
         case 0x29:
         {
@@ -4022,6 +4176,48 @@ int z80_execute_instruction(z80_emulator_t *z80)
             z80->regs.ix--;
             cycles = 10;
             break;
+
+        // DD 0x34: INC (IX+d)
+        case 0x34:
+        {
+            int8_t displacement = (int8_t)z80_read_memory_internal(z80, z80->regs.pc++);
+            uint16_t addr = z80->regs.ix + displacement;
+            uint8_t value = z80_read_memory_internal(z80, addr);
+            uint16_t result = value + 1;
+            z80->regs.f = (z80->regs.f & Z80_FLAG_C);
+            if ((uint8_t)result == 0)
+                z80->regs.f |= Z80_FLAG_Z;
+            if ((uint8_t)result & 0x80)
+                z80->regs.f |= Z80_FLAG_S;
+            if (calculate_half_carry_add(value, 1))
+                z80->regs.f |= Z80_FLAG_H;
+            if (value == 0x7F)
+                z80->regs.f |= Z80_FLAG_PV;
+            z80_write_memory_internal(z80, addr, (uint8_t)result);
+            cycles = 23;
+            break;
+        }
+
+        // DD 0x35: DEC (IX+d)
+        case 0x35:
+        {
+            int8_t displacement = (int8_t)z80_read_memory_internal(z80, z80->regs.pc++);
+            uint16_t addr = z80->regs.ix + displacement;
+            uint8_t value = z80_read_memory_internal(z80, addr);
+            uint16_t result = value - 1;
+            z80->regs.f = (z80->regs.f & Z80_FLAG_C) | Z80_FLAG_N;
+            if ((uint8_t)result == 0)
+                z80->regs.f |= Z80_FLAG_Z;
+            if ((uint8_t)result & 0x80)
+                z80->regs.f |= Z80_FLAG_S;
+            if (calculate_half_carry_sub(value, 1))
+                z80->regs.f |= Z80_FLAG_H;
+            if (value == 0x80)
+                z80->regs.f |= Z80_FLAG_PV;
+            z80_write_memory_internal(z80, addr, (uint8_t)result);
+            cycles = 23;
+            break;
+        }
 
         // DD 0x36: LD (IX+d),n - Load immediate value into memory at IX+displacement
         case 0x36:
@@ -4160,53 +4356,370 @@ int z80_execute_instruction(z80_emulator_t *z80)
             break;
         }
 
-        // Undocumented: DD 0x60-0x6F: LD IXH/IXL, r - Load IX high/low byte from register
-        case 0x60: // LD IXH, B
+        // DD 0x60-0x6F: LD IXH/IXL, r - Load IX high/low byte from register
+        // DD 0x60: LD IXH,B
+        case 0x60:
             z80->regs.ix = (z80->regs.ix & 0x00FF) | (z80->regs.b << 8);
             cycles = 8;
             break;
-        case 0x61: // LD IXH, C
+        // DD 0x61: LD IXH,C
+        case 0x61:
             z80->regs.ix = (z80->regs.ix & 0x00FF) | (z80->regs.c << 8);
             cycles = 8;
             break;
-        case 0x62: // LD IXH, D
+        // DD 0x62: LD IXH,D
+        case 0x62:
             z80->regs.ix = (z80->regs.ix & 0x00FF) | (z80->regs.d << 8);
             cycles = 8;
             break;
-        case 0x63: // LD IXH, E
+        // DD 0x63: LD IXH,E
+        case 0x63:
             z80->regs.ix = (z80->regs.ix & 0x00FF) | (z80->regs.e << 8);
             cycles = 8;
             break;
-        case 0x64: // LD IXH, IXH (NOP basically)
+        // DD 0x64: LD IXH,IXH
+        case 0x64:
             cycles = 8;
             break;
-        case 0x65: // LD IXH, IXL
+        // DD 0x65: LD IXH,IXL
+        case 0x65:
             z80->regs.ix = (z80->regs.ix & 0x00FF) | ((z80->regs.ix & 0xFF) << 8);
             cycles = 8;
             break;
-        case 0x68: // LD IXL, B
+        // DD 0x68: LD IXL,B
+        case 0x68:
             z80->regs.ix = (z80->regs.ix & 0xFF00) | z80->regs.b;
             cycles = 8;
             break;
-        case 0x69: // LD IXL, C
+        // DD 0x69: LD IXL,C
+        case 0x69:
             z80->regs.ix = (z80->regs.ix & 0xFF00) | z80->regs.c;
             cycles = 8;
             break;
-        case 0x6A: // LD IXL, D
+        // DD 0x6A: LD IXL,D
+        case 0x6A:
             z80->regs.ix = (z80->regs.ix & 0xFF00) | z80->regs.d;
             cycles = 8;
             break;
-        case 0x6B: // LD IXL, E
+        // DD 0x6B: LD IXL,E
+        case 0x6B:
             z80->regs.ix = (z80->regs.ix & 0xFF00) | z80->regs.e;
             cycles = 8;
             break;
-        case 0x6C: // LD IXL, IXH
+        // DD 0x6C: LD IXL,IXH
+        case 0x6C:
             z80->regs.ix = (z80->regs.ix & 0xFF00) | ((z80->regs.ix >> 8) & 0xFF);
             cycles = 8;
             break;
-        case 0x6D: // LD IXL, IXL (NOP basically)
-            cycles = 8;
+        // DD 0x6D: LD IXL,IXL
+        case 0x6D:
             break;
+
+        // DD 0x46: LD B,(IX+d) - Load B from memory at IX+displacement
+        case 0x46:
+        {
+            int8_t displacement = (int8_t)z80_read_memory_internal(z80, z80->regs.pc++);
+            uint16_t addr = z80->regs.ix + displacement;
+            z80->regs.b = z80_read_memory_internal(z80, addr);
+            cycles = 19;
+            break;
+        }
+
+        // DD 0x4E: LD C,(IX+d) - Load C from memory at IX+displacement
+        case 0x4E:
+        {
+            int8_t displacement = (int8_t)z80_read_memory_internal(z80, z80->regs.pc++);
+            uint16_t addr = z80->regs.ix + displacement;
+            z80->regs.c = z80_read_memory_internal(z80, addr);
+            cycles = 19;
+            break;
+        }
+
+        // DD 0x56: LD D,(IX+d) - Load D from memory at IX+displacement
+        case 0x56:
+        {
+            int8_t displacement = (int8_t)z80_read_memory_internal(z80, z80->regs.pc++);
+            uint16_t addr = z80->regs.ix + displacement;
+            z80->regs.d = z80_read_memory_internal(z80, addr);
+            cycles = 19;
+            break;
+        }
+
+        // DD 0x5E: LD E,(IX+d) - Load E from memory at IX+displacement
+        case 0x5E:
+        {
+            int8_t displacement = (int8_t)z80_read_memory_internal(z80, z80->regs.pc++);
+            uint16_t addr = z80->regs.ix + displacement;
+            z80->regs.e = z80_read_memory_internal(z80, addr);
+            cycles = 19;
+            break;
+        }
+
+        // DD 0x66: LD IXH,(IX+d) - Load high byte of IX from memory at IX+displacement
+        case 0x66:
+        {
+            int8_t displacement = (int8_t)z80_read_memory_internal(z80, z80->regs.pc++);
+            uint16_t addr = z80->regs.ix + displacement;
+            uint8_t value = z80_read_memory_internal(z80, addr);
+            z80->regs.ix = (z80->regs.ix & 0x00FF) | (value << 8);
+            cycles = 19;
+            break;
+        }
+
+        // DD 0x70: LD (IX+d),B - Load memory at IX+displacement with B
+        case 0x70:
+        {
+            int8_t displacement = (int8_t)z80_read_memory_internal(z80, z80->regs.pc++);
+            uint16_t addr = z80->regs.ix + displacement;
+            z80_write_memory_internal(z80, addr, z80->regs.b);
+            cycles = 19;
+            break;
+        }
+
+        // DD 0x71: LD (IX+d),C - Load memory at IX+displacement with C
+        case 0x71:
+        {
+            int8_t displacement = (int8_t)z80_read_memory_internal(z80, z80->regs.pc++);
+            uint16_t addr = z80->regs.ix + displacement;
+            z80_write_memory_internal(z80, addr, z80->regs.c);
+            cycles = 19;
+            break;
+        }
+
+        // DD 0x72: LD (IX+d),D - Load memory at IX+displacement with D
+        case 0x72:
+        {
+            int8_t displacement = (int8_t)z80_read_memory_internal(z80, z80->regs.pc++);
+            uint16_t addr = z80->regs.ix + displacement;
+            z80_write_memory_internal(z80, addr, z80->regs.d);
+            cycles = 19;
+            break;
+        }
+
+        // DD 0x73: LD (IX+d),E - Load memory at IX+displacement with E
+        case 0x73:
+        {
+            int8_t displacement = (int8_t)z80_read_memory_internal(z80, z80->regs.pc++);
+            uint16_t addr = z80->regs.ix + displacement;
+            z80_write_memory_internal(z80, addr, z80->regs.e);
+            cycles = 19;
+            break;
+        }
+
+        // DD 0x74: LD (IX+d),H - Load memory at IX+displacement with H
+        case 0x74:
+        {
+            int8_t displacement = (int8_t)z80_read_memory_internal(z80, z80->regs.pc++);
+            uint16_t addr = z80->regs.ix + displacement;
+            z80_write_memory_internal(z80, addr, z80->regs.h);
+            cycles = 19;
+            break;
+        }
+
+        // DD 0x75: LD (IX+d),L - Load memory at IX+displacement with L
+        case 0x75:
+        {
+            int8_t displacement = (int8_t)z80_read_memory_internal(z80, z80->regs.pc++);
+            uint16_t addr = z80->regs.ix + displacement;
+            z80_write_memory_internal(z80, addr, z80->regs.l);
+            cycles = 19;
+            break;
+        }
+
+        // DD 0x7E: LD A,(IX+d) is already implemented above
+
+        // DD 0x86: ADD A,(IX+d)
+        case 0x86:
+        {
+            int8_t displacement = (int8_t)z80_read_memory_internal(z80, z80->regs.pc++);
+            uint16_t addr = z80->regs.ix + displacement;
+            uint8_t value = z80_read_memory_internal(z80, addr);
+            result = z80->regs.a + value;
+            z80->regs.f = 0;
+            if ((uint8_t)result == 0)
+                z80->regs.f |= Z80_FLAG_Z;
+            if ((uint8_t)result & 0x80)
+                z80->regs.f |= Z80_FLAG_S;
+            if (calculate_half_carry_add(z80->regs.a, value))
+                z80->regs.f |= Z80_FLAG_H;
+            if (result & 0x100)
+                z80->regs.f |= Z80_FLAG_C;
+            if ((z80->regs.a & 0x80) == (value & 0x80) && ((uint8_t)result & 0x80) != (z80->regs.a & 0x80))
+                z80->regs.f |= Z80_FLAG_PV;
+            z80->regs.a = (uint8_t)result;
+            cycles = 19;
+            break;
+        }
+
+        // DD 0x8E: ADC A,(IX+d)
+        case 0x8E:
+        {
+            int8_t displacement = (int8_t)z80_read_memory_internal(z80, z80->regs.pc++);
+            uint16_t addr = z80->regs.ix + displacement;
+            uint8_t value = z80_read_memory_internal(z80, addr);
+            uint8_t carry = (z80->regs.f & Z80_FLAG_C) ? 1 : 0;
+            result = z80->regs.a + value + carry;
+            z80->regs.f = 0;
+            if ((uint8_t)result == 0)
+                z80->regs.f |= Z80_FLAG_Z;
+            if ((uint8_t)result & 0x80)
+                z80->regs.f |= Z80_FLAG_S;
+            if (calculate_half_carry_add(z80->regs.a, value + carry))
+                z80->regs.f |= Z80_FLAG_H;
+            if (result & 0x100)
+                z80->regs.f |= Z80_FLAG_C;
+            if ((z80->regs.a & 0x80) == (value & 0x80) && ((uint8_t)result & 0x80) != (z80->regs.a & 0x80))
+                z80->regs.f |= Z80_FLAG_PV;
+            z80->regs.a = (uint8_t)result;
+            cycles = 19;
+            break;
+        }
+
+        // DD 0x96: SUB (IX+d)
+        case 0x96:
+        {
+            int8_t displacement = (int8_t)z80_read_memory_internal(z80, z80->regs.pc++);
+            uint16_t addr = z80->regs.ix + displacement;
+            uint8_t value = z80_read_memory_internal(z80, addr);
+            result = z80->regs.a - value;
+            z80->regs.f = Z80_FLAG_N;
+            if ((uint8_t)result == 0)
+                z80->regs.f |= Z80_FLAG_Z;
+            if ((uint8_t)result & 0x80)
+                z80->regs.f |= Z80_FLAG_S;
+            if (calculate_half_carry_sub(z80->regs.a, value))
+                z80->regs.f |= Z80_FLAG_H;
+            if (result & 0x100)
+                z80->regs.f |= Z80_FLAG_C;
+            if ((z80->regs.a & 0x80) != (value & 0x80) && ((uint8_t)result & 0x80) != (z80->regs.a & 0x80))
+                z80->regs.f |= Z80_FLAG_PV;
+            z80->regs.a = (uint8_t)result;
+            cycles = 19;
+            break;
+        }
+
+        // DD 0x9E: SBC A,(IX+d)
+        case 0x9E:
+        {
+            int8_t displacement = (int8_t)z80_read_memory_internal(z80, z80->regs.pc++);
+            uint16_t addr = z80->regs.ix + displacement;
+            uint8_t value = z80_read_memory_internal(z80, addr);
+            uint8_t carry = (z80->regs.f & Z80_FLAG_C) ? 1 : 0;
+            result = z80->regs.a - value - carry;
+            z80->regs.f = Z80_FLAG_N;
+            if ((uint8_t)result == 0)
+                z80->regs.f |= Z80_FLAG_Z;
+            if ((uint8_t)result & 0x80)
+                z80->regs.f |= Z80_FLAG_S;
+            if (calculate_half_carry_sub(z80->regs.a, value + carry))
+                z80->regs.f |= Z80_FLAG_H;
+            if (result & 0x100)
+                z80->regs.f |= Z80_FLAG_C;
+            if ((z80->regs.a & 0x80) != (value & 0x80) && ((uint8_t)result & 0x80) != (z80->regs.a & 0x80))
+                z80->regs.f |= Z80_FLAG_PV;
+            z80->regs.a = (uint8_t)result;
+            cycles = 19;
+            break;
+        }
+
+        // DD 0xA6: AND (IX+d)
+        case 0xA6:
+        {
+            int8_t displacement = (int8_t)z80_read_memory_internal(z80, z80->regs.pc++);
+            uint16_t addr = z80->regs.ix + displacement;
+            uint8_t value = z80_read_memory_internal(z80, addr);
+            z80->regs.a &= value;
+            z80->regs.f = Z80_FLAG_H;
+            if (z80->regs.a == 0)
+                z80->regs.f |= Z80_FLAG_Z;
+            if (z80->regs.a & 0x80)
+                z80->regs.f |= Z80_FLAG_S;
+            if (calculate_parity(z80->regs.a))
+                z80->regs.f |= Z80_FLAG_PV;
+            cycles = 19;
+            break;
+        }
+
+        // DD 0xAE: XOR (IX+d)
+        case 0xAE:
+        {
+            int8_t displacement = (int8_t)z80_read_memory_internal(z80, z80->regs.pc++);
+            uint16_t addr = z80->regs.ix + displacement;
+            uint8_t value = z80_read_memory_internal(z80, addr);
+            z80->regs.a ^= value;
+            z80->regs.f = 0;
+            if (z80->regs.a == 0)
+                z80->regs.f |= Z80_FLAG_Z;
+            if (z80->regs.a & 0x80)
+                z80->regs.f |= Z80_FLAG_S;
+            if (calculate_parity(z80->regs.a))
+                z80->regs.f |= Z80_FLAG_PV;
+            cycles = 19;
+            break;
+        }
+
+        // DD 0xBE: CP (IX+d)
+        case 0xBE:
+        {
+            int8_t displacement = (int8_t)z80_read_memory_internal(z80, z80->regs.pc++);
+            uint16_t addr = z80->regs.ix + displacement;
+            uint8_t value = z80_read_memory_internal(z80, addr);
+            result = z80->regs.a - value;
+            z80->regs.f = Z80_FLAG_N;
+            if ((uint8_t)result == 0)
+                z80->regs.f |= Z80_FLAG_Z;
+            if ((uint8_t)result & 0x80)
+                z80->regs.f |= Z80_FLAG_S;
+            if (calculate_half_carry_sub(z80->regs.a, value))
+                z80->regs.f |= Z80_FLAG_H;
+            if (result & 0x100)
+                z80->regs.f |= Z80_FLAG_C;
+            if ((z80->regs.a & 0x80) != (value & 0x80) && ((uint8_t)result & 0x80) != (z80->regs.a & 0x80))
+                z80->regs.f |= Z80_FLAG_PV;
+            cycles = 19;
+            break;
+        }
+
+        // DD 0x09: ADD IX,BC
+        case 0x09:
+        {
+            uint16_t bc = (z80->regs.b << 8) | z80->regs.c;
+            uint32_t result_32 = (uint32_t)z80->regs.ix + (uint32_t)bc;
+            z80->regs.f = (z80->regs.f & ~(Z80_FLAG_N | Z80_FLAG_C | Z80_FLAG_H));
+            if (result_32 & 0x10000)
+                z80->regs.f |= Z80_FLAG_C;
+            if (((z80->regs.ix & 0x0FFF) + (bc & 0x0FFF)) & 0x1000)
+                z80->regs.f |= Z80_FLAG_H;
+            z80->regs.ix = (uint16_t)result_32;
+            cycles = 15;
+            break;
+        }
+
+        // DD 0x39: ADD IX,SP
+        case 0x39:
+        {
+            uint32_t result_32 = (uint32_t)z80->regs.ix + (uint32_t)z80->regs.sp;
+            z80->regs.f = (z80->regs.f & ~(Z80_FLAG_N | Z80_FLAG_C | Z80_FLAG_H));
+            if (result_32 & 0x10000)
+                z80->regs.f |= Z80_FLAG_C;
+            if (((z80->regs.ix & 0x0FFF) + (z80->regs.sp & 0x0FFF)) & 0x1000)
+                z80->regs.f |= Z80_FLAG_H;
+            z80->regs.ix = (uint16_t)result_32;
+            cycles = 15;
+            break;
+        }
+
+        // DD 0xE3: EX (SP),IX - Exchange (SP) with IX
+        case 0xE3:
+        {
+            uint8_t temp_low = z80_read_memory_internal(z80, z80->regs.sp);
+            uint8_t temp_high = z80_read_memory_internal(z80, z80->regs.sp + 1);
+            z80_write_memory_internal(z80, z80->regs.sp, z80->regs.ix & 0xFF);
+            z80_write_memory_internal(z80, z80->regs.sp + 1, (z80->regs.ix >> 8) & 0xFF);
+            z80->regs.ix = (temp_high << 8) | temp_low;
+            cycles = 23;
+            break;
+        }
 
         // Default DD instruction - not yet implemented
         default:

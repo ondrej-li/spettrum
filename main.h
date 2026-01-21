@@ -46,6 +46,11 @@ typedef struct
     uint16_t warn_pc_history[5];  // Last 5 PC values before VRAM execution
     uint16_t warn_sp_at_fault;    // SP value when PC-in-VRAM occurred
     uint16_t warn_pc_at_sp_fault; // PC value when SP-in-VRAM occurred
+
+    // Warning buffer for display after emulation completes
+    char *warning_buffer;       // Dynamically allocated buffer for warnings
+    size_t warning_buffer_size; // Total size of buffer
+    size_t warning_buffer_pos;  // Current position in buffer
 } spettrum_emulator_t;
 
 #endif

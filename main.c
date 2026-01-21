@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 #include <getopt.h>
 #include <unistd.h>
 #include <pthread.h>
@@ -20,6 +21,7 @@
 #include "ula.h"
 #include "main.h"
 #include "disasm.h"
+#include "keyboard.h"
 
 // Global emulator reference for signal handling
 static spettrum_emulator_t *g_emulator = NULL;
@@ -42,6 +44,47 @@ static void *ula_render_thread(void *arg)
     }
 
     return NULL;
+}
+
+/**
+ * Append a message to the warning buffer (thread-safe)
+ */
+static void append_warning_buffer(spettrum_emulator_t *emulator, const char *format, ...)
+{
+    if (!emulator || !emulator->warning_buffer)
+        return;
+
+    va_list args;
+    va_start(args, format);
+
+    // Calculate space needed
+    int needed = vsnprintf(NULL, 0, format, args);
+    va_start(args, format); // Reset va_list
+
+    // Expand buffer if needed (allocate in 4KB chunks)
+    if (emulator->warning_buffer_pos + needed + 1 > emulator->warning_buffer_size)
+    {
+        size_t new_size = ((emulator->warning_buffer_pos + needed + 1 + 4095) / 4096) * 4096;
+        char *new_buffer = realloc(emulator->warning_buffer, new_size);
+        if (new_buffer)
+        {
+            emulator->warning_buffer = new_buffer;
+            emulator->warning_buffer_size = new_size;
+        }
+        else
+        {
+            va_end(args);
+            return; // Allocation failed, skip this warning
+        }
+    }
+
+    // Append to buffer
+    emulator->warning_buffer_pos += vsnprintf(
+        emulator->warning_buffer + emulator->warning_buffer_pos,
+        emulator->warning_buffer_size - emulator->warning_buffer_pos,
+        format, args);
+
+    va_end(args);
 }
 
 /**
@@ -83,7 +126,7 @@ static void display_debug_info(spettrum_emulator_t *emulator)
 }
 
 /**
- * Detect CPU anomalies
+ * Detect CPU anomalies (warnings collected, displayed after emulation)
  */
 static void check_cpu_anomalies(spettrum_emulator_t *emulator)
 {
@@ -105,9 +148,9 @@ static void check_cpu_anomalies(spettrum_emulator_t *emulator)
         }
 
         const char *area = (pc >= 0x5800) ? "attributes" : "bitmap";
-        printf("\033[53;1H\033[K⚠️  PC in VRAM %s (PC=0x%04X SP=0x%04X) [%llu times]\n",
-               area, pc, sp, emulator->warnings_pc_in_vram);
-        fflush(stdout);
+        // Append to warning buffer instead of printing to screen
+        append_warning_buffer(emulator, "  ⚠️  PC in VRAM %s (PC=0x%04X SP=0x%04X) [%llu times]\n",
+                              area, pc, sp, emulator->warnings_pc_in_vram);
     }
 
     // Stack collision with screen memory
@@ -116,9 +159,9 @@ static void check_cpu_anomalies(spettrum_emulator_t *emulator)
         emulator->warnings_sp_in_vram++;
         emulator->last_warn_sp = sp;
         emulator->warn_pc_at_sp_fault = pc;
-        printf("\033[53;1H\033[K⚠️  SP in VRAM (SP=0x%04X PC=0x%04X) [%llu times]\n",
-               sp, pc, emulator->warnings_sp_in_vram);
-        fflush(stdout);
+        // Append to warning buffer instead of printing to screen
+        append_warning_buffer(emulator, "  ⚠️  SP in VRAM (SP=0x%04X PC=0x%04X) [%llu times]\n",
+                              sp, pc, emulator->warnings_sp_in_vram);
     }
 }
 
@@ -154,6 +197,14 @@ static void display_anomaly_summary(spettrum_emulator_t *emulator)
     {
         printf("✓ No CPU anomalies detected\n");
     }
+
+    // Display buffered warnings collected during emulation
+    if (emulator->warning_buffer && emulator->warning_buffer_pos > 0)
+    {
+        printf("\nWarnings collected during emulation:\n");
+        printf("%s", emulator->warning_buffer);
+    }
+
     printf("Total instructions executed: %llu\n", emulator->total_instructions);
     fflush(stdout);
 }
@@ -256,6 +307,18 @@ static void emulator_write_memory(void *user_data, uint16_t addr, uint8_t value)
     emulator->memory[addr] = value;
 }
 
+/**
+ * Keyboard port IN handler (port 0xFE and variants)
+ *
+ * The Spectrum reads keyboard state via port 0xFE.
+ * This handler queries the current host keyboard state and returns it
+ * in Spectrum keyboard matrix format.
+ */
+static uint8_t keyboard_read_handler(void *user_data, uint8_t port)
+{
+    (void)user_data; // Not needed for stateless handler
+    return keyboard_read_port(port);
+}
 
 /**
  * Initialize emulator components
@@ -292,6 +355,36 @@ static spettrum_emulator_t *emulator_init(ula_render_mode_t render_mode)
         z80_cleanup(emulator->cpu);
         free(emulator);
         return NULL;
+    }
+
+    // Initialize keyboard handler (sets terminal to raw mode)
+    if (keyboard_init() != 0)
+    {
+        fprintf(stderr, "Error: Failed to initialize keyboard\n");
+        ula_cleanup(emulator->display);
+        z80_cleanup(emulator->cpu);
+        free(emulator);
+        return NULL;
+    }
+
+    // Register keyboard port handlers
+    // Each port reads a different row of the keyboard matrix
+    z80_register_port_in(emulator->cpu, 0xFE, keyboard_read_handler); // CAPS SHIFT, Z, X, C, V
+    z80_register_port_in(emulator->cpu, 0xFD, keyboard_read_handler); // A, S, D, F, G
+    z80_register_port_in(emulator->cpu, 0xFB, keyboard_read_handler); // Q, W, E, R, T
+    z80_register_port_in(emulator->cpu, 0xF7, keyboard_read_handler); // 1, 2, 3, 4, 5
+    z80_register_port_in(emulator->cpu, 0xEF, keyboard_read_handler); // 6, 7, 8, 9, 0
+    z80_register_port_in(emulator->cpu, 0xDF, keyboard_read_handler); // SPACE, SHIFT, ENTER, SYMBOL SHIFT
+    z80_register_port_in(emulator->cpu, 0xBF, keyboard_read_handler); // P, O, I, U, Y
+    z80_register_port_in(emulator->cpu, 0x7F, keyboard_read_handler); // M, N, B, T, G
+
+    // Initialize warning buffer (initial 4KB)
+    emulator->warning_buffer_size = 4096;
+    emulator->warning_buffer = malloc(emulator->warning_buffer_size);
+    emulator->warning_buffer_pos = 0;
+    if (emulator->warning_buffer)
+    {
+        emulator->warning_buffer[0] = '\0';
     }
 
     emulator->running = 1;
@@ -359,11 +452,18 @@ static void emulator_cleanup(spettrum_emulator_t *emulator)
     if (!emulator)
         return;
 
+    // Cleanup keyboard (restores terminal to normal mode)
+    keyboard_cleanup();
+
     if (emulator->cpu)
         z80_cleanup(emulator->cpu);
 
     if (emulator->display)
         ula_cleanup(emulator->display);
+
+    // Free warning buffer
+    if (emulator->warning_buffer)
+        free(emulator->warning_buffer);
 
     free(emulator);
 }
