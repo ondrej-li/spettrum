@@ -7,6 +7,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <string.h>
 #include <stdarg.h>
 #include <getopt.h>
@@ -97,18 +98,18 @@ static void append_warning_buffer(spettrum_emulator_t *emulator, const char *for
 static void display_debug_info(spettrum_emulator_t *emulator)
 {
     z80_registers_t *regs = &emulator->cpu->regs;
+    z80_emulator_t *z80 = emulator->cpu;
 
     // Move to line 49 (bottom area)
     printf("\033[49;1H\033[K");
     printf("PC:%04X SP:%04X AF:%04X BC:%04X DE:%04X HL:%04X IX:%04X IY:%04X\n",
-           regs->pc, regs->sp, (regs->a << 8) | regs->f,
+           regs->pc, regs->sp, (regs->a << 8) | get_f(z80),
            (regs->b << 8) | regs->c, (regs->d << 8) | regs->e,
            (regs->h << 8) | regs->l, regs->ix, regs->iy);
 
     printf("\033[50;1H\033[K");
     printf("Flags: S=%d Z=%d H=%d P=%d N=%d C=%d | Inst:%llu\n",
-           (regs->f >> 7) & 1, (regs->f >> 6) & 1, (regs->f >> 4) & 1,
-           (regs->f >> 2) & 1, (regs->f >> 1) & 1, regs->f & 1,
+           regs->sf, regs->zf, regs->hf, regs->pf, regs->nf, regs->cf,
            emulator->total_instructions);
 
     // Show last few instructions
@@ -289,7 +290,8 @@ static void print_help(const char *program_name)
  */
 static uint8_t emulator_read_memory(void *user_data, uint16_t addr)
 {
-    spettrum_emulator_t *emulator = (spettrum_emulator_t *)user_data;
+    z80_callback_context_t *ctx = (z80_callback_context_t *)user_data;
+    spettrum_emulator_t *emulator = (spettrum_emulator_t *)ctx->memory_data;
     return emulator->memory[addr];
 }
 
@@ -298,7 +300,8 @@ static uint8_t emulator_read_memory(void *user_data, uint16_t addr)
  */
 static void emulator_write_memory(void *user_data, uint16_t addr, uint8_t value)
 {
-    spettrum_emulator_t *emulator = (spettrum_emulator_t *)user_data;
+    z80_callback_context_t *ctx = (z80_callback_context_t *)user_data;
+    spettrum_emulator_t *emulator = (spettrum_emulator_t *)ctx->memory_data;
 
     // First 16KB (0x0000-0x3FFF) is ROM - ignore writes
     if (addr < SPETTRUM_ROM_SIZE)
@@ -318,6 +321,45 @@ static uint8_t keyboard_read_handler(void *user_data, uint8_t port)
 {
     (void)user_data; // Not needed for stateless handler
     return keyboard_read_port(port);
+}
+
+/**
+ * Generic I/O read callback - fallback for unregistered ports
+ * Returns 0xFF (all bits set) for unimplemented ports
+ */
+static uint8_t generic_io_read(void *user_data, uint8_t port)
+{
+    (void)user_data; // Not needed
+    (void)port;      // Not needed
+    return 0xFF;     // Default: all bits set (floating bus)
+}
+
+/**
+ * Generic I/O write callback - fallback for unregistered ports
+ * Handles border color (port 0xFE bits 0-2) and other unimplemented ports
+ */
+static void generic_io_write(void *user_data, uint8_t port, uint8_t value)
+{
+    z80_callback_context_t *ctx = (z80_callback_context_t *)user_data;
+    if (!ctx || !ctx->io_data)
+        return;
+
+    spettrum_emulator_t *emulator = (spettrum_emulator_t *)ctx->io_data;
+    if (!emulator)
+        return;
+
+    // Port 0xFE - ULA control
+    if (port == 0xFE)
+    {
+        // Bits 0-2: border color
+        uint8_t border_color = value & 0x07;
+        ula_set_border_color(emulator->display, border_color);
+
+        // Bits 3-4: tape control (not implemented)
+        // Bit 5: unused
+        // Bit 6-7: unused
+    }
+    // Other ports: silently ignore (not implemented)
 }
 
 /**
@@ -347,8 +389,11 @@ static spettrum_emulator_t *emulator_init(ula_render_mode_t render_mode)
     // Set memory callbacks
     z80_set_memory_callbacks(emulator->cpu, emulator_read_memory, emulator_write_memory, emulator);
 
+    // Set I/O callbacks context data
+    z80_set_io_callbacks(emulator->cpu, emulator);
+
     // Initialize ULA display
-    emulator->display = ula_init(SPECTRUM_WIDTH, SPECTRUM_HEIGHT, render_mode);
+    emulator->display = ula_init(SPECTRUM_WIDTH, SPECTRUM_HEIGHT, &emulator->memory[SPETTRUM_VRAM_START], render_mode);
     if (!emulator->display)
     {
         fprintf(stderr, "Error: Failed to initialize ULA display\n");
@@ -367,7 +412,11 @@ static spettrum_emulator_t *emulator_init(ula_render_mode_t render_mode)
         return NULL;
     }
 
-    // Register keyboard port handlers
+    // Set generic I/O callbacks (fallback for all ports)
+    z80_register_port_in(emulator->cpu, 0x00, generic_io_read);   // Default read handler for all ports
+    z80_register_port_out(emulator->cpu, 0x00, generic_io_write); // Default write handler for all ports
+
+    // Register keyboard port handlers (override the generic handler for these ports)
     // Each port reads a different row of the keyboard matrix
     z80_register_port_in(emulator->cpu, 0xFE, keyboard_read_handler); // CAPS SHIFT, Z, X, C, V
     z80_register_port_in(emulator->cpu, 0xFD, keyboard_read_handler); // A, S, D, F, G
@@ -586,18 +635,21 @@ static int emulator_run(spettrum_emulator_t *emulator, uint64_t instructions_to_
             dump_memory_to_file(emulator);
         }
 
-        // Get current PC and opcode for disassembly
-        uint16_t pc = emulator->cpu->regs.pc;
+        // Get current PC and opcode for disassembly BEFORE z80_step increments PC
+        uint16_t pc_before = emulator->cpu->regs.pc;
+
+        // Execute a single instruction and accumulate cycles
+        int instruction_cycles = z80_step(emulator->cpu);
+
+        // Now capture the opcode that was actually executed (from the PC position before step)
+        uint16_t pc = pc_before;
         uint8_t opcode = emulator->memory[pc];
 
         // Record in history
         emulator->last_pc[emulator->history_index] = pc;
         emulator->last_opcode[emulator->history_index] = opcode;
         emulator->history_index = (emulator->history_index + 1) % 10;
-
-        // Execute a single instruction and accumulate cycles
-        int instruction_cycles = z80_execute_instruction(emulator->cpu);
-        emulator->cpu->total_cycles += instruction_cycles;
+        emulator->cpu->cyc += instruction_cycles;
 
         // Check for anomalies every 1000 instructions
         if (emulator->total_instructions % 1000 == 0)
@@ -646,7 +698,7 @@ static int emulator_run(spettrum_emulator_t *emulator, uint64_t instructions_to_
 
     printf("\nEmulation completed.\n");
     printf("Total instructions executed: %llu\n", instructions_executed);
-    printf("Total cycles: %llu\n", emulator->cpu->total_cycles);
+    printf("Total cycles: %llu\n", emulator->cpu->cyc);
     printf("Final PC: 0x%04X\n", emulator->cpu->regs.pc);
     return 0;
 }

@@ -603,6 +603,7 @@ void log_instruction_disassembly(spettrum_emulator_t *emulator, uint16_t pc, uin
         return;
 
     z80_registers_t *regs = &emulator->cpu->regs;
+    z80_emulator_t *z80 = emulator->cpu;
     char instr_buf[32] = "???";
 
     // Read operand bytes for immediate values and addresses
@@ -1182,12 +1183,12 @@ void log_instruction_disassembly(spettrum_emulator_t *emulator, uint16_t pc, uin
     // Decode flags: S Z H P/V N C (uppercase = 1, lowercase = 0)
     char flags[16];
     snprintf(flags, sizeof(flags), "%c%c%c%c%c%c",
-             (regs->f & Z80_FLAG_S) ? 'S' : 's',
-             (regs->f & Z80_FLAG_Z) ? 'Z' : 'z',
-             (regs->f & Z80_FLAG_H) ? 'H' : 'h',
-             (regs->f & Z80_FLAG_PV) ? 'P' : 'p',
-             (regs->f & Z80_FLAG_N) ? 'N' : 'n',
-             (regs->f & Z80_FLAG_C) ? 'C' : 'c');
+             (regs->sf) ? 'S' : 's',
+             (regs->zf) ? 'Z' : 'z',
+             (regs->hf) ? 'H' : 'h',
+             (regs->pf) ? 'P' : 'p',
+             (regs->nf) ? 'N' : 'n',
+             (regs->cf) ? 'C' : 'c');
 
     // Add memory access info for certain instructions
     char mem_info[64] = "";
@@ -1218,7 +1219,7 @@ void log_instruction_disassembly(spettrum_emulator_t *emulator, uint16_t pc, uin
         snprintf(mem_info, sizeof(mem_info), " [SP-2]=%04X", hl);
         break;
     case 0xF5: // PUSH AF
-        snprintf(mem_info, sizeof(mem_info), " [SP-2]=%04X", (regs->a << 8) | regs->f);
+        snprintf(mem_info, sizeof(mem_info), " [SP-2]=%04X", (regs->a << 8) | get_f(z80));
         break;
     // LD (addr), reg - show what's being written
     case 0x02: // LD (BC), A

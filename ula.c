@@ -480,7 +480,7 @@ void ula_term_cleanup(void)
 /**
  * Initialize ULA display
  */
-ula_t *ula_init(int width, int height, ula_render_mode_t render_mode)
+ula_t *ula_init(int width, int height, uint8_t *vram, ula_render_mode_t render_mode)
 {
     ula_t *ula = malloc(sizeof(ula_t));
     if (!ula)
@@ -488,9 +488,9 @@ ula_t *ula_init(int width, int height, ula_render_mode_t render_mode)
 
     ula->width = width;
     ula->height = height;
+    ula->vram = vram;
     ula->border_color = 0;
     ula->render_mode = render_mode;
-    memset(ula->vram, 0, SPECTRUM_RAM_SIZE);
     pthread_mutex_init(&ula->lock, NULL);
 
     return ula;

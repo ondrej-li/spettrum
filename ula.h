@@ -34,7 +34,7 @@ typedef struct
 {
     int width;
     int height;
-    uint8_t vram[SPECTRUM_RAM_SIZE];
+    uint8_t *vram;
     uint8_t border_color;
     ula_render_mode_t render_mode;
     pthread_mutex_t lock;
@@ -44,10 +44,11 @@ typedef struct
  * Initialize ULA display
  * @param width Display width in pixels
  * @param height Display height in pixels
+ * @param vram Pointer to shared video RAM (64KB)
  * @param render_mode Rendering mode (ULA_RENDER_BLOCK2X2 or ULA_RENDER_BRAILLE2X4)
  * @return Pointer to ULA structure, or NULL on error
  */
-ula_t *ula_init(int width, int height, ula_render_mode_t render_mode);
+ula_t *ula_init(int width, int height, uint8_t *vram, ula_render_mode_t render_mode);
 
 /**
  * Cleanup ULA display

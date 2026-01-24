@@ -1,5 +1,6 @@
 CC = clang
 CFLAGS = -Wall -Wextra -O2 -pthread
+CFLAGS_DEBUG = -Wall -Wextra -O0 -g -pthread
 LDFLAGS = -pthread
 
 SRC_DIR = src
@@ -14,9 +15,12 @@ KEYBOARD_OBJ = $(OBJ_DIR)/keyboard.o
 SOURCES = $(wildcard $(SRC_DIR)/*.c)
 OBJECTS = $(SOURCES:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
 
-.PHONY: all clean test run
+.PHONY: all clean test run debug
 
 all: $(TARGET)
+
+debug: CFLAGS = $(CFLAGS_DEBUG)
+debug: $(TARGET)
 
 $(TARGET): main.c $(Z80_OBJ) $(ULA_OBJ) $(DISASM_OBJ) $(KEYBOARD_OBJ) | $(BIN_DIR)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ main.c $(Z80_OBJ) $(ULA_OBJ) $(DISASM_OBJ) $(KEYBOARD_OBJ)

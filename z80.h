@@ -9,6 +9,7 @@
 #define Z80_H
 
 #include <stdint.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <pthread.h>
 
@@ -20,30 +21,20 @@
 // Z80 Register file
 typedef struct
 {
-    uint16_t pc; // Program counter
-    uint16_t sp; // Stack pointer
-    uint16_t ix; // Index register X
-    uint16_t iy; // Index register Y
+    uint16_t pc, sp, ix, iy;                // special purpose registers
+    uint16_t mem_ptr;                       // "wz" register
+    uint8_t a, b, c, d, e, h, l;            // main registers
+    uint8_t a_, b_, c_, d_, e_, h_, l_, f_; // alternate registers
+    uint8_t i, r;                           // interrupt vector, memory refresh
 
-    // Main registers (AF, BC, DE, HL)
-    uint8_t a, f; // Accumulator and flags
-    uint8_t b, c; // BC register pair
-    uint8_t d, e; // DE register pair
-    uint8_t h, l; // HL register pair
-
-    // Alternate registers (AF', BC', DE', HL')
-    uint8_t a_alt, f_alt;
-    uint8_t b_alt, c_alt;
-    uint8_t d_alt, e_alt;
-    uint8_t h_alt, l_alt;
-
-    // Special registers
-    uint8_t i; // Interrupt vector
-    uint8_t r; // Memory refresh
+    // flags: sign, zero, yf, half-carry, xf, parity/overflow, negative, carry
+    bool sf : 1, zf : 1, yf : 1, hf : 1, xf : 1, pf : 1, nf : 1, cf : 1;
 
     // Interrupt/control
     uint8_t im;         // Interrupt mode (0, 1, or 2)
     uint8_t iff1, iff2; // Interrupt flip-flops
+
+    uint8_t iff_delay;
 } z80_registers_t;
 
 // Function pointer types for I/O callbacks
@@ -75,15 +66,17 @@ typedef struct
 
     // Thread state
     pthread_t thread;
-    volatile int running;
-    volatile int paused;
-    volatile int halted;
+    volatile bool running;
+    volatile bool paused;
+    volatile bool halted;
+    volatile bool int_pending : 1, nmi_pending : 1;
+    uint8_t int_data;
     pthread_mutex_t state_lock;
     pthread_cond_t state_cond;
 
     // Timing
     struct timespec last_cycle_time;
-    uint64_t total_cycles;
+    uint64_t cyc;
 
     // I/O and memory callbacks (pluggable)
     z80_read_io_t read_io;
@@ -129,18 +122,6 @@ void z80_set_memory_callbacks(z80_emulator_t *z80,
                               void *user_data);
 
 /**
- * Set I/O port access callbacks
- * @param z80 Emulator instance
- * @param read_fn Function pointer for I/O reads
- * @param write_fn Function pointer for I/O writes
- * @param user_data User data passed to callbacks
- */
-void z80_set_io_callbacks(z80_emulator_t *z80,
-                          z80_read_io_t read_fn,
-                          z80_write_io_t write_fn,
-                          void *user_data);
-
-/**
  * Register port-specific IN callback
  * Called when CPU executes IN instruction for a specific port
  * @param z80 Emulator instance
@@ -163,11 +144,18 @@ void z80_register_port_out(z80_emulator_t *z80,
                            z80_write_io_t write_fn);
 
 /**
+ * Set I/O callback context data
+ * @param z80 Emulator instance
+ * @param io_data User data to pass to I/O callbacks
+ */
+void z80_set_io_callbacks(z80_emulator_t *z80, void *io_data);
+
+/**
  * Execute a single Z80 instruction
  * @param z80 Emulator instance
  * @return Number of clock cycles consumed by the instruction
  */
-int z80_execute_instruction(z80_emulator_t *z80);
+int z80_step(z80_emulator_t *const z);
 
 /**
  * Get register value by name
@@ -198,15 +186,6 @@ uint16_t z80_get_pc(z80_emulator_t *z80);
  * @param pc New PC value
  */
 void z80_set_pc(z80_emulator_t *z80, uint16_t pc);
-
-/**
- * Load memory from buffer
- * @param z80 Emulator instance
- * @param addr Starting address
- * @param data Pointer to data buffer
- * @param size Number of bytes to load
- */
-void z80_load_memory(z80_emulator_t *z80, uint16_t addr, const uint8_t *data, size_t size);
 
 /**
  * Start asynchronous emulation
@@ -251,4 +230,6 @@ size_t z80_save_state(z80_emulator_t *z80, uint8_t *buffer, size_t buffer_size);
  */
 int z80_load_state(z80_emulator_t *z80, const uint8_t *buffer, size_t buffer_size);
 
+void set_f(z80_emulator_t *const z, uint8_t val);
+uint8_t get_f(z80_emulator_t *const z);
 #endif // Z80_H
