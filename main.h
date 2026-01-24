@@ -25,12 +25,13 @@ typedef struct
     ula_t *display;
     uint8_t memory[SPETTRUM_TOTAL_MEMORY];
     volatile int running;
-    FILE *disasm_file;        // File for disassembly output
-    volatile int dump_memory; // Flag to trigger memory dump
-    int dump_count;           // Counter for dump filenames
-    volatile int paused;      // Pause state
-    volatile int speed_delay; // Delay in microseconds (0 = full speed)
-    volatile int step_mode;   // Step mode: execute one instruction at a time
+    FILE *disasm_file;          // File for disassembly output
+    volatile int dump_memory;   // Flag to trigger memory dump
+    int dump_count;             // Counter for dump filenames
+    volatile int paused;        // Pause state
+    volatile int speed_delay;   // Delay in microseconds (0 = full speed)
+    volatile int step_mode;     // Step mode: execute one instruction at a time
+    const char *simulated_keys; // Keys to simulate (injected automatically)
 
     // Debug tracking
     uint16_t last_pc[10];        // Last 10 PC values

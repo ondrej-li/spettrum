@@ -1,8 +1,10 @@
 /**
  * Spectrum Keyboard Handler Implementation
  *
- * Stateless handler that directly queries the host keyboard state
- * when the Z80 reads from port 0xFE (keyboard port).
+ * Defensive implementation that:
+ * - Buffers keyboard input safely (non-destructive reading)
+ * - Polls stdin non-blockingly
+ * - Supports key injection from command line for testing
  *
  * Maps host keys to Spectrum keyboard matrix format.
  */
@@ -12,87 +14,111 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <termios.h>
-#include <fcntl.h>
+#include <errno.h>
 
-// Global terminal state
-static struct termios original_termios;
-static int raw_mode_enabled = 0;
+// Key buffer - store recently pressed keys
+#define KEYBOARD_BUFFER_SIZE 256
+static unsigned char keyboard_buffer[KEYBOARD_BUFFER_SIZE];
+static int buffer_pos = 0;
+
+// Simulated key injection (for testing)
+static char simulated_key = 0;
 
 /**
- * Initialize keyboard - set terminal to raw mode for key reading
+ * Set a simulated key for testing (from command line)
  */
-int keyboard_init(void)
+void keyboard_set_simulated_key(char key)
 {
-    // Save original terminal settings
-    if (tcgetattr(STDIN_FILENO, &original_termios) < 0)
+    simulated_key = key;
+    if (key != 0)
     {
-        perror("tcgetattr");
-        return -1;
+        // Add to buffer so it gets picked up
+        if (buffer_pos < KEYBOARD_BUFFER_SIZE - 1)
+        {
+            keyboard_buffer[buffer_pos++] = (unsigned char)key;
+        }
     }
+}
 
-    struct termios raw = original_termios;
+/**
+ * Poll stdin and buffer any available characters
+ */
+static void keyboard_poll_stdin(void)
+{
+    unsigned char ch;
+    int nread = 0;
 
-    // Disable canonical mode and echo
-    // ICANON: disable line buffering, read input immediately
-    // ECHO: don't echo characters back
-    raw.c_lflag &= ~(ICANON | ECHO);
-
-    // Set non-blocking read with minimal timeout
-    raw.c_cc[VMIN] = 0;  // Don't block waiting for input
-    raw.c_cc[VTIME] = 0; // No timeout
-
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) < 0)
+    // Keep trying to read until stdin is empty
+    while (buffer_pos < KEYBOARD_BUFFER_SIZE - 1)
     {
-        perror("tcsetattr");
-        return -1;
-    }
+        nread = read(STDIN_FILENO, &ch, 1);
 
-    raw_mode_enabled = 1;
+        if (nread == 1)
+        {
+            // Got a character, add to buffer
+            keyboard_buffer[buffer_pos++] = ch;
+        }
+        else if (nread == 0 || (nread == -1 && errno == EAGAIN))
+        {
+            // No more input available
+            break;
+        }
+        else
+        {
+            // Other error, stop
+            break;
+        }
+    }
+}
+
+/**
+ * Check if a key is in the buffer (non-destructive)
+ */
+static int is_key_in_buffer(unsigned char key)
+{
+    for (int i = 0; i < buffer_pos; i++)
+    {
+        if (keyboard_buffer[i] == key)
+        {
+            return 1;
+        }
+    }
     return 0;
 }
 
 /**
- * Restore terminal to normal mode
+ * Initialize keyboard
+ * Terminal setup is handled by ula.c - this module just polls stdin
+ */
+int keyboard_init(void)
+{
+    return 0;
+}
+
+/**
+ * Cleanup keyboard
+ * Terminal restoration is handled by ula.c
  */
 void keyboard_cleanup(void)
 {
-    if (raw_mode_enabled)
-    {
-        tcsetattr(STDIN_FILENO, TCSAFLUSH, &original_termios);
-        raw_mode_enabled = 0;
-    }
+    // Clear buffer
+    buffer_pos = 0;
+    simulated_key = 0;
 }
 
 /**
  * Check if a specific key is currently pressed
  * Returns 1 if pressed, 0 if not pressed
  *
- * This checks if the character is currently available on stdin
- * without consuming it (non-destructive peek).
+ * Non-destructive - doesn't consume the key from buffer.
  */
 static int is_key_pressed(unsigned char key)
 {
-    // Save current flags
-    int flags = fcntl(STDIN_FILENO, F_GETFL);
-    fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
+    // First, poll stdin to get fresh input
+    keyboard_poll_stdin();
 
-    unsigned char ch;
-    int result = 0;
-
-    // Try to read a character
-    if (read(STDIN_FILENO, &ch, 1) == 1)
-    {
-        result = (ch == key) ? 1 : 0;
-        // Note: We consume the character here - this is a limitation
-        // A real implementation would use ioctl or other methods for
-        // true non-destructive keyboard state reading
-    }
-
-    // Restore flags
-    fcntl(STDIN_FILENO, F_SETFL, flags);
-
-    return result;
+    // Check buffer
+    return is_key_in_buffer(key);
 }
 
 /**

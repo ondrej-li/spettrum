@@ -275,13 +275,14 @@ static void print_help(const char *program_name)
 {
     printf("Usage: %s [OPTIONS]\n\n", program_name);
     printf("Options:\n");
-    printf("  -h, --help              Show this help message\n");
-    printf("  -v, --version           Show version information\n");
-    printf("  -r, --rom FILE          Load ROM from file\n");
-    printf("  -d, --disk FILE         Load disk image from file\n");
-    printf("  -i, --instructions NUM  Number of instructions to execute (0=unlimited, default=0)\n");
-    printf("  -D, --disassemble FILE  Write disassembly to FILE\n");
-    printf("  -m, --render-mode MODE  Rendering mode: block (2x2) or braille (2x4, default)\n");
+    printf("  -h, --help                Show this help message\n");
+    printf("  -v, --version             Show version information\n");
+    printf("  -r, --rom FILE            Load ROM from file\n");
+    printf("  -d, --disk FILE           Load disk image from file\n");
+    printf("  -i, --instructions NUM    Number of instructions to execute (0=unlimited, default=0)\n");
+    printf("  -D, --disassemble FILE    Write disassembly to FILE\n");
+    printf("  -m, --render-mode MODE    Rendering mode: block (2x2) or braille (2x4, default)\n");
+    printf("  -k, --simulate-key STRING Simulate key presses (auto-replay starting at 3s, spaced 500ms)\n");
     printf("\n");
 }
 
@@ -436,6 +437,9 @@ static spettrum_emulator_t *emulator_init(ula_render_mode_t render_mode)
         emulator->warning_buffer[0] = '\0';
     }
 
+    // Initialize simulated keys (will be set later if -k option is used)
+    emulator->simulated_keys = NULL;
+
     emulator->running = 1;
 
     return emulator;
@@ -547,6 +551,11 @@ static int emulator_run(spettrum_emulator_t *emulator, uint64_t instructions_to_
 
     uint64_t instructions_executed = 0;
 
+    // For simulated key timing
+    struct timespec start_time;
+    clock_gettime(CLOCK_MONOTONIC, &start_time);
+    int simulated_key_index = 0;
+
     // Run Z80 CPU in main thread
     while (emulator->running && (instructions_to_run == 0 || instructions_executed < instructions_to_run))
     {
@@ -626,6 +635,31 @@ static int emulator_run(spettrum_emulator_t *emulator, uint64_t instructions_to_
         {
             usleep(10000); // Sleep 10ms while paused
             continue;
+        }
+
+        // Handle simulated key injection (auto-replay starting at 3 seconds, spaced 500ms apart)
+        if (emulator->simulated_keys && emulator->simulated_keys[0] != '\0')
+        {
+            struct timespec current_time;
+            clock_gettime(CLOCK_MONOTONIC, &current_time);
+
+            // Calculate elapsed time in milliseconds
+            long elapsed_ms = (current_time.tv_sec - start_time.tv_sec) * 1000 +
+                              (current_time.tv_nsec - start_time.tv_nsec) / 1000000;
+
+            // First key starts at 3000ms (3 seconds)
+            // Each subsequent key is 500ms after the previous one
+            long key_delay_ms = 3000 + (simulated_key_index * 500);
+
+            if (elapsed_ms >= key_delay_ms && simulated_key_index < (int)strlen(emulator->simulated_keys))
+            {
+                // Time to inject the next key
+                char key_char = emulator->simulated_keys[simulated_key_index];
+                keyboard_set_simulated_key(key_char);
+                printf("[Key injected: %c at %ldms]\n", key_char, elapsed_ms);
+                fflush(stdout);
+                simulated_key_index++;
+            }
         }
 
         // Check if memory dump was requested
@@ -711,6 +745,7 @@ int main(int argc, char *argv[])
     const char *rom_file = NULL;
     const char *disk_file = NULL;
     const char *disasm_file = NULL;
+    const char *simulated_keys = NULL;                     // Simulated key string for testing
     uint64_t instructions_to_run = 0;                      // Default: unlimited
     ula_render_mode_t render_mode = ULA_RENDER_BRAILLE2X4; // Default: braille
 
@@ -723,12 +758,13 @@ int main(int argc, char *argv[])
         {"instructions", required_argument, 0, 'i'},
         {"disassemble", required_argument, 0, 'D'},
         {"render-mode", required_argument, 0, 'm'},
+        {"simulate-key", required_argument, 0, 'k'},
         {0, 0, 0, 0}};
 
     // Parse command-line arguments
     int option_index = 0;
     int c;
-    while ((c = getopt_long(argc, argv, "hvr:d:i:D:m:", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "hvr:d:i:D:m:k:", long_options, &option_index)) != -1)
     {
         switch (c)
         {
@@ -764,6 +800,10 @@ int main(int argc, char *argv[])
                 fprintf(stderr, "Error: Invalid render mode '%s'. Use 'block' or 'braille'\n", optarg);
                 return EXIT_FAILURE;
             }
+            break;
+        case 'k':
+            // Simulate keys for testing (string of characters)
+            simulated_keys = optarg;
             break;
         case '?':
             // getopt_long already printed error message
@@ -853,6 +893,13 @@ int main(int argc, char *argv[])
             emulator_cleanup(emulator);
             return EXIT_FAILURE;
         }
+    }
+
+    // Set simulated keys if provided
+    if (simulated_keys && simulated_keys[0] != '\0')
+    {
+        emulator->simulated_keys = simulated_keys;
+        printf("Simulated keys to inject: '%s' (starting at 3s, spaced 500ms apart)\n", simulated_keys);
     }
 
     // Run emulation
