@@ -109,11 +109,6 @@ static void z80_write_io_internal(z80_emulator_t *z80, uint16_t port, uint8_t va
 {
     uint8_t port_low = port & 0xFF; // Use low byte for port callback lookup
 
-    if (port_low == 0xFE)
-    {
-        fprintf(stderr, "[DEBUG z80] z80_write_io_internal: port=0x%04X, value=0x%02X\n", port, value);
-    }
-
     // Check for port-specific callback first
     if (z80->port_callbacks[port_low].write_fn)
     {

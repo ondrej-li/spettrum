@@ -76,11 +76,13 @@ typedef struct
     char braille_matrix[BRAILLE_OUTPUT_HEIGHT][BRAILLE_OUTPUT_WIDTH * 4]; // UTF-8 braille takes 3 bytes + null
     color_attr_t braille_colors[BRAILLE_OUTPUT_HEIGHT][BRAILLE_OUTPUT_WIDTH];
     ula_render_mode_t render_mode;
+    uint8_t border_color;
     pthread_mutex_t lock;
 } ula_matrix_t;
 
 static ula_matrix_t ula_matrix = {
     .render_mode = ULA_RENDER_BRAILLE2X4,
+    .border_color = 0,
     .lock = PTHREAD_MUTEX_INITIALIZER};
 
 /**
@@ -275,19 +277,54 @@ void convert_vram_to_matrix(const uint8_t *vram, ula_render_mode_t render_mode)
 }
 
 /**
+ * Get terminal dimensions
+ * Returns terminal width and height in characters
+ */
+static void get_terminal_size(int *width, int *height)
+{
+    struct winsize w;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0)
+    {
+        *width = w.ws_col;
+        *height = w.ws_row;
+    }
+    else
+    {
+        *width = 80;
+        *height = 24;
+    }
+}
+
+/**
  * Render the matrix to terminal with minimal flickering
  * Uses pre-rendered buffer and atomic screen updates for 50Hz
+ * Includes border rendering with centering if screen size allows
  */
 void ula_render_to_terminal(void)
 {
 #ifndef DISABLE_RENDERING
     // 50Hz = 20ms per frame
     const long FRAME_TIME_NS = 20000000; // 20ms in nanoseconds
-    static char render_buffer[40960];    // Pre-allocated render buffer (40KB for UTF-8)
+    static char render_buffer[65536];    // Pre-allocated render buffer (64KB for UTF-8 with borders)
     static int first_frame = 1;
 
     struct timespec frame_start, frame_end;
     long elapsed_ns;
+
+    // Get terminal dimensions for centering
+    int term_width, term_height;
+    get_terminal_size(&term_width, &term_height);
+
+    // Calculate content dimensions based on render mode
+    int content_height = (ula_matrix.render_mode == ULA_RENDER_BRAILLE2X4) ? BRAILLE_OUTPUT_HEIGHT : OUTPUT_HEIGHT;
+    int content_width = (ula_matrix.render_mode == ULA_RENDER_BRAILLE2X4) ? BRAILLE_OUTPUT_WIDTH : OUTPUT_WIDTH;
+
+    // Calculate border and padding sizes for centering
+    // Clamp padding to 0 if content is wider than terminal
+    int left_padding = (term_width > content_width) ? (term_width - content_width) / 2 : 0;
+    int right_padding = (term_width > content_width) ? term_width - content_width - left_padding : 0;
+    // Always try to render at least 1 line of border top/bottom if there's room
+    int border_height = (term_height > content_height + 2) ? 1 : 0;
 
     // Start frame timer BEFORE any I/O
     clock_gettime(CLOCK_MONOTONIC, &frame_start);
@@ -311,13 +348,41 @@ void ula_render_to_terminal(void)
         buffer_pos += sprintf(render_buffer + buffer_pos, "\033[H");
     }
 
+    // Get border color and convert to ANSI
+    uint8_t border_color = ula_matrix.border_color & 0x07;
+    int ansi_border_color = spectrum_to_ansi[border_color];
+    // Background colors: 40-47 for standard, 100-107 for bright
+    int border_bg_code = 40 + ansi_border_color;
+
+    // Render top border if space available
+    if (border_height > 0)
+    {
+        for (int b = 0; b < border_height; b++)
+        {
+            // Top border with border color (full width)
+            buffer_pos += sprintf(render_buffer + buffer_pos, "\033[%dm", border_bg_code);
+            for (int i = 0; i < term_width && buffer_pos < 65520; i++)
+                render_buffer[buffer_pos++] = ' ';
+            // Reset and newline
+            buffer_pos += sprintf(render_buffer + buffer_pos, "\033[0m\n");
+        }
+    }
+
     // Render based on mode
     if (ula_matrix.render_mode == ULA_RENDER_BRAILLE2X4)
     {
-        // Braille mode rendering with colors
+        // Braille mode rendering with colors and border
         color_attr_t current_attr = {0, 0, 0}; // Track last color to minimize escape codes
         for (int y = 0; y < BRAILLE_OUTPUT_HEIGHT; y++)
         {
+            // Left padding with border color
+            if (left_padding > 0)
+            {
+                buffer_pos += sprintf(render_buffer + buffer_pos, "\033[%dm", border_bg_code);
+                for (int p = 0; p < left_padding && buffer_pos < 65520; p++)
+                    render_buffer[buffer_pos++] = ' ';
+            }
+
             current_attr.ink = 0xFF; // Force initial color code
             for (int x = 0; x < BRAILLE_OUTPUT_WIDTH; x++)
             {
@@ -344,24 +409,39 @@ void ula_render_to_terminal(void)
 
                 const char *ch = &ula_matrix.braille_matrix[y][x * 4];
                 // Copy UTF-8 character (3 bytes)
-                for (int i = 0; i < 3 && ch[i] && buffer_pos < 40950; i++)
+                for (int i = 0; i < 3 && ch[i] && buffer_pos < 65520; i++)
                 {
                     render_buffer[buffer_pos++] = ch[i];
                 }
             }
+            // Right padding with border color
+            if (right_padding > 0)
+            {
+                buffer_pos += sprintf(render_buffer + buffer_pos, "\033[%dm", border_bg_code);
+                for (int p = 0; p < right_padding && buffer_pos < 65520; p++)
+                    render_buffer[buffer_pos++] = ' ';
+            }
             // Reset colors before newline
-            if (buffer_pos < 40955)
+            if (buffer_pos < 65530)
                 buffer_pos += sprintf(render_buffer + buffer_pos, "\033[0m");
-            if (buffer_pos < 40959)
+            if (buffer_pos < 65534)
                 render_buffer[buffer_pos++] = '\n';
         }
     }
     else
     {
-        // Block mode rendering with colors
+        // Block mode rendering with colors and border
         color_attr_t current_attr = {0, 0, 0}; // Track last color to minimize escape codes
         for (int y = 0; y < OUTPUT_HEIGHT; y++)
         {
+            // Left padding with border color
+            if (left_padding > 0)
+            {
+                buffer_pos += sprintf(render_buffer + buffer_pos, "\033[%dm", border_bg_code);
+                for (int p = 0; p < left_padding && buffer_pos < 65520; p++)
+                    render_buffer[buffer_pos++] = ' ';
+            }
+
             current_attr.ink = 0xFF; // Force initial color code
             for (int x = 0; x < OUTPUT_WIDTH; x++)
             {
@@ -388,24 +468,48 @@ void ula_render_to_terminal(void)
 
                 const char *ch = ula_matrix.matrix[y][x];
                 // Handle UTF-8 multi-byte characters
-                while (*ch && buffer_pos < 40950)
+                while (*ch && buffer_pos < 65520)
                 {
                     render_buffer[buffer_pos++] = *ch++;
                 }
             }
+            // Right padding with border color
+            if (right_padding > 0)
+            {
+                buffer_pos += sprintf(render_buffer + buffer_pos, "\033[%dm", border_bg_code);
+                for (int p = 0; p < right_padding && buffer_pos < 65520; p++)
+                    render_buffer[buffer_pos++] = ' ';
+            }
             // Reset colors before newline
-            if (buffer_pos < 40955)
+            if (buffer_pos < 65530)
                 buffer_pos += sprintf(render_buffer + buffer_pos, "\033[0m");
-            if (buffer_pos < 40959)
+            if (buffer_pos < 65534)
                 render_buffer[buffer_pos++] = '\n';
+        }
+    }
+
+    // Render bottom border if space available
+    if (border_height > 0)
+    {
+        for (int b = 0; b < border_height; b++)
+        {
+            // Bottom border with border color (full width)
+            buffer_pos += sprintf(render_buffer + buffer_pos, "\033[%dm", border_bg_code);
+            for (int i = 0; i < term_width && buffer_pos < 65520; i++)
+                render_buffer[buffer_pos++] = ' ';
+            // Reset and newline
+            buffer_pos += sprintf(render_buffer + buffer_pos, "\033[0m\n");
         }
     }
 
     pthread_mutex_unlock(&ula_matrix.lock);
 
     // Write entire buffer at once (atomic write)
-    fwrite(render_buffer, 1, buffer_pos, stdout);
-    fflush(stdout);
+    if (buffer_pos > 0 && buffer_pos < 65536)
+    {
+        fwrite(render_buffer, 1, buffer_pos, stdout);
+        fflush(stdout);
+    }
 
     // End frame timer AFTER I/O completes
     clock_gettime(CLOCK_MONOTONIC, &frame_end);
@@ -536,9 +640,16 @@ void ula_set_border_color(ula_t *ula, uint8_t color)
     if (!ula)
         return;
 
+    uint8_t color_val = color & 0x07;
+
     pthread_mutex_lock(&ula->lock);
-    ula->border_color = color & 0x07;
+    ula->border_color = color_val;
     pthread_mutex_unlock(&ula->lock);
+
+    // Also update the global matrix border color for rendering
+    pthread_mutex_lock(&ula_matrix.lock);
+    ula_matrix.border_color = color_val;
+    pthread_mutex_unlock(&ula_matrix.lock);
 }
 
 /**
