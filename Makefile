@@ -1,6 +1,6 @@
 CC = clang
 CFLAGS = -Wall -Wextra -O2 -pthread
-CFLAGS_DEBUG = -Wall -Wextra -O0 -g -pthread
+CFLAGS_DEBUG = -Wall -Wextra -O0 -g -pthread -DDISABLE_RENDERING
 LDFLAGS = -pthread
 
 SRC_DIR = src

@@ -337,7 +337,7 @@ static uint8_t generic_io_read(void *user_data, uint8_t port)
 
 /**
  * Generic I/O write callback - fallback for unregistered ports
- * Handles border color (port 0xFE bits 0-2) and other unimplemented ports
+ * Handles border color (port 0xFE bits 0-2), keyboard row selection, and other ports
  */
 static void generic_io_write(void *user_data, uint8_t port, uint8_t value)
 {
@@ -349,7 +349,7 @@ static void generic_io_write(void *user_data, uint8_t port, uint8_t value)
     if (!emulator)
         return;
 
-    // Port 0xFE - ULA control
+    // Port 0xFE - ULA control and keyboard row selection
     if (port == 0xFE)
     {
         // Bits 0-2: border color
@@ -357,7 +357,11 @@ static void generic_io_write(void *user_data, uint8_t port, uint8_t value)
         ula_set_border_color(emulator->display, border_color);
 
         // Bits 3-4: tape control (not implemented)
-        // Bit 5: unused
+        // Bits 5-7: keyboard row selector
+        // The ROM code uses OUT (C), B to set the row selector
+        // which tells us which row of the keyboard matrix to scan
+        keyboard_set_row_selector(value);
+
         // Bit 6-7: unused
     }
     // Other ports: silently ignore (not implemented)
@@ -439,6 +443,11 @@ static spettrum_emulator_t *emulator_init(ula_render_mode_t render_mode)
 
     // Initialize simulated keys (will be set later if -k option is used)
     emulator->simulated_keys = NULL;
+
+    // Initialize ULA interrupt timing fields
+    emulator->frame_cycle_count = 0;
+    emulator->int_asserted = 0;
+    emulator->int_asserted_time = 0;
 
     emulator->running = 1;
 
@@ -684,6 +693,29 @@ static int emulator_run(spettrum_emulator_t *emulator, uint64_t instructions_to_
         emulator->last_opcode[emulator->history_index] = opcode;
         emulator->history_index = (emulator->history_index + 1) % 10;
         emulator->cpu->cyc += instruction_cycles;
+
+// ULA interrupt handling - trigger INT at ~50Hz (every ~70908 cycles at 3.5MHz)
+// Spectrum: ~69888 T-states minimum from vertical sync
+// Using 70908 for full frame with contention timing
+#define SPECTRUM_FRAME_CYCLES 70908 // Cycles per 50Hz frame
+#define INT_PULSE_CYCLES 32         // INT asserted for ~32 T-states
+
+        emulator->frame_cycle_count += instruction_cycles;
+
+        // Check if we've completed a frame
+        if (emulator->frame_cycle_count >= SPECTRUM_FRAME_CYCLES)
+        {
+            // Reset frame counter
+            emulator->frame_cycle_count -= SPECTRUM_FRAME_CYCLES;
+
+            // Assert INT signal - generates interrupt if IM1 is enabled
+            if (emulator->cpu->regs.iff1) // Check if interrupts are enabled
+            {
+                z80_gen_int(emulator->cpu, 0xFF); // Generate interrupt with data 0xFF for IM1
+                emulator->int_asserted = 1;
+                emulator->int_asserted_time = emulator->cpu->cyc;
+            }
+        }
 
         // Check for anomalies every 1000 instructions
         if (emulator->total_instructions % 1000 == 0)

@@ -280,6 +280,7 @@ void convert_vram_to_matrix(const uint8_t *vram, ula_render_mode_t render_mode)
  */
 void ula_render_to_terminal(void)
 {
+#ifndef DISABLE_RENDERING
     // 50Hz = 20ms per frame
     const long FRAME_TIME_NS = 20000000; // 20ms in nanoseconds
     static char render_buffer[40960];    // Pre-allocated render buffer (40KB for UTF-8)
@@ -419,6 +420,25 @@ void ula_render_to_terminal(void)
         long sleep_ns = FRAME_TIME_NS - elapsed_ns;
         usleep(sleep_ns / 1000); // Convert nanoseconds to microseconds
     }
+#else
+    // DISABLE_RENDERING: Skip terminal output, but maintain 50Hz frame timing
+    const long FRAME_TIME_NS = 20000000; // 20ms in nanoseconds
+    struct timespec frame_start, frame_end;
+    long elapsed_ns;
+
+    clock_gettime(CLOCK_MONOTONIC, &frame_start);
+
+    // Just sleep for frame time without rendering
+    clock_gettime(CLOCK_MONOTONIC, &frame_end);
+    elapsed_ns = (frame_end.tv_sec - frame_start.tv_sec) * 1000000000L +
+                 (frame_end.tv_nsec - frame_start.tv_nsec);
+
+    if (elapsed_ns < FRAME_TIME_NS)
+    {
+        long sleep_ns = FRAME_TIME_NS - elapsed_ns;
+        usleep(sleep_ns / 1000);
+    }
+#endif
 }
 
 /**

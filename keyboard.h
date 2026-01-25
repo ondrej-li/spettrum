@@ -1,24 +1,28 @@
 /**
  * Spectrum Keyboard Handler
  *
- * Stateless handler that queries the host keyboard state when called.
- * The Spectrum keyboard is organized by rows accessed via different I/O ports.
+ * Implements authentic Spectrum keyboard matrix scanning with active-low logic.
  *
- * When the Z80 executes IN (port 0xFE), the upper byte selects which row to read.
- * Active low: bits are 0 when key is pressed, 1 when released.
+ * How it works:
+ * 1. CPU writes row selector to port 0xFE via OUT (C), B instruction
+ *    - B contains a row mask with one bit low (e.g., 0xFE = row 0, 0xFD = row 1, etc.)
+ *    - This selects which of 8 rows will be scanned
  *
- * Keyboard port mapping (upper byte of port address):
- * 0xFEFE: Row 0 - SHIFT, Z, X, C, V
- * 0xFDFE: Row 1 - A, S, D, F, G
- * 0xFBFE: Row 2 - Q, W, E, R, T
- * 0xF7FE: Row 3 - 1, 2, 3, 4, 5
- * 0xEFFE: Row 4 - 0, 9, 8, 7, 6
- * 0xDFFE: Row 5 - ENTER, L, K, J, H
- * 0xBFFE: Row 6 - SPACE, SYMBOL SHIFT, M, N, B (note: actually ENTER, L, K, J, H based on JS)
- * 0x7FFE: Row 7 - SPACE, SYMBOL SHIFT, M, N, B
+ * 2. CPU reads port 0xFE via IN A, (C) instruction
+ *    - Returns the key states for the selected row (bits 0-4)
+ *    - Each bit = 0 when key pressed, 1 when released
+ *    - Bits 5-7 are set to 1 (per Spectrum spec)
  *
- * Return value: Each bit represents a key (0=pressed, 1=released)
- * Bit 0 = Key 1, Bit 1 = Key 2, etc.
+ * Keyboard matrix (8 rows × 5 columns):
+ *
+ * Row 0 (0xFE - bit 0 low): SHIFT, Z, X, C, V
+ * Row 1 (0xFD - bit 1 low): A, S, D, F, G
+ * Row 2 (0xFB - bit 2 low): Q, W, E, R, T
+ * Row 3 (0xF7 - bit 3 low): 1, 2, 3, 4, 5
+ * Row 4 (0xEF - bit 4 low): 0, 9, 8, 7, 6
+ * Row 5 (0xDF - bit 5 low): ENTER, L, K, J, H
+ * Row 6 (0xBF - bit 6 low): SPACE, SYMBOL SHIFT, M, N, B
+ * Row 7 (0x7F - bit 7 low): (alternate/duplicate)
  */
 
 #ifndef KEYBOARD_H
@@ -27,31 +31,47 @@
 #include <stdint.h>
 
 /**
- * Initialize keyboard - sets up terminal for raw input
+ * Initialize keyboard - sets up internal state for keyboard scanning
  * @return 0 on success, -1 on error
  */
 int keyboard_init(void);
 
 /**
- * Cleanup keyboard - restore terminal to normal mode
+ * Cleanup keyboard - reset internal state
  */
 void keyboard_cleanup(void);
 
 /**
- * Get current keyboard state for a port read
+ * Set the current row selector (called when CPU executes OUT to port 0xFE)
  *
- * Reads the host keyboard and returns which keys are currently pressed
- * in the Spectrum keyboard matrix format for the specified port.
+ * The row selector contains a row mask where one bit is low to select that row.
+ * @param row_selector The 8-bit value written to port 0xFE
+ */
+void keyboard_set_row_selector(uint8_t row_selector);
+
+/**
+ * Get the current row selector
+ * @return The current row selector byte
+ */
+uint8_t keyboard_get_row_selector(void);
+
+/**
+ * Read keyboard state for the currently selected row
  *
- * @param port The I/O port (0xFE, 0xFD, 0xFB, 0xF7, 0xEF, 0xDF, 0xBF, 0x7F)
- * @return 8-bit value where each bit represents a key state
- *         (0 = key pressed, 1 = key released)
+ * This is called when the CPU executes IN A, (C) to read port 0xFE.
+ * Returns the key states for whichever row was most recently selected
+ * via keyboard_set_row_selector().
+ *
+ * @param port The port address (0xFE or variants; not used, included for API compatibility)
+ * @return 8-bit value representing key states in the selected row:
+ *         - Bits 0-4: Key states (0=pressed, 1=released)
+ *         - Bits 5-7: Always set to 1 (per Spectrum ROM spec)
  */
 uint8_t keyboard_read_port(uint8_t port);
 
 /**
- * Set a simulated key for testing (bypasses actual keyboard input)
- * Useful for command-line testing when keyboard input isn't available
+ * Set a simulated key for testing (for command-line key injection)
+ * Adds the key to the pressed set so it will be detected in subsequent scans
  *
  * @param key The ASCII character to simulate as pressed
  */

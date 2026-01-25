@@ -52,6 +52,11 @@ typedef struct
     char *warning_buffer;       // Dynamically allocated buffer for warnings
     size_t warning_buffer_size; // Total size of buffer
     size_t warning_buffer_pos;  // Current position in buffer
+
+    // ULA interrupt timing
+    uint64_t frame_cycle_count; // Cycles since last interrupt
+    uint64_t int_asserted_time; // Cycle count when INT was asserted
+    int int_asserted;           // Whether INT is currently asserted
 } spettrum_emulator_t;
 
 #endif

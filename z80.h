@@ -230,6 +230,13 @@ size_t z80_save_state(z80_emulator_t *z80, uint8_t *buffer, size_t buffer_size);
  */
 int z80_load_state(z80_emulator_t *z80, const uint8_t *buffer, size_t buffer_size);
 
+/**
+ * Generate an interrupt signal
+ * @param z80 Emulator instance
+ * @param data Data byte for interrupt (used in IM0 and IM2 modes)
+ */
+void z80_gen_int(z80_emulator_t *const z, uint8_t data);
+
 void set_f(z80_emulator_t *const z, uint8_t val);
 uint8_t get_f(z80_emulator_t *const z);
 #endif // Z80_H

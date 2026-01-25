@@ -1,5 +1,7 @@
 # Spettrum - Z80 Emulator
 
+Strictly never create any files, including markdown files with analyses unless explicitly instructed to.
+
 ## Project Overview
 
 **Spettrum** is a high-performance Z80 CPU emulator for the Sinclair ZX Spectrum computer with a terminal-based display renderer. The project implements:
@@ -15,6 +17,7 @@ The emulator can run authentic Spectrum programs including system ROMs, with rea
 ## Building
 
 ### Prerequisites
+
 - **clang** compiler (or any C compiler)
 - **POSIX-compatible system** (macOS, Linux)
 - **pthread** library (for multi-threaded rendering)
@@ -98,6 +101,7 @@ To capture detailed instruction-level debugging information:
 ```
 
 This generates `disasm.log` containing:
+
 - **Program Counter (PC)** - Instruction address
 - **Opcodes** - Raw machine code bytes
 - **Mnemonics** - Human-readable Z80 assembly instruction names
@@ -105,6 +109,7 @@ This generates `disasm.log` containing:
 - **CPU State** - Register and flag values at each instruction
 
 The disassembly helps identify:
+
 - Program flow and execution paths
 - Anomalous execution (e.g., CPU jumping into video RAM)
 - Stack pointer corruption
@@ -113,6 +118,7 @@ The disassembly helps identify:
 ### Debug Features
 
 When the emulator runs, it tracks:
+
 - **PC History**: Last 10 program counter values for context
 - **Opcode History**: Last 10 executed opcodes
 - **Anomalies**: Warnings when PC or SP enter video RAM (indicating bugs)
@@ -162,13 +168,13 @@ spettrum/
 
 ### Core Modules
 
-| Module | Purpose |
-|--------|---------|
-| **z80.c/h** | Z80 CPU instruction execution, register management, memory/I/O callbacks |
-| **ula.c/h** | Video RAM rendering, converts pixel data to Unicode block characters, 50Hz timing |
-| **disasm.c/h** | Z80 instruction disassembly for debugging and logging |
-| **keyboard.c/h** | Host system keyboard input mapped to Spectrum keyboard matrix |
-| **main.c/h** | Emulator initialization, command-line parsing, main event loop, thread management |
+| Module           | Purpose                                                                           |
+| ---------------- | --------------------------------------------------------------------------------- |
+| **z80.c/h**      | Z80 CPU instruction execution, register management, memory/I/O callbacks          |
+| **ula.c/h**      | Video RAM rendering, converts pixel data to Unicode block characters, 50Hz timing |
+| **disasm.c/h**   | Z80 instruction disassembly for debugging and logging                             |
+| **keyboard.c/h** | Host system keyboard input mapped to Spectrum keyboard matrix                     |
+| **main.c/h**     | Emulator initialization, command-line parsing, main event loop, thread management |
 
 ## Testing
 
@@ -186,6 +192,7 @@ make
 ```
 
 Each test file validates a specific component:
+
 - **test_z80.c**: Executes Z80 instructions and verifies register changes
 - **test_ula.c**: Tests pixel-to-character conversion for display rendering
 - **test_bit.c**: Validates bit manipulation operations
@@ -203,6 +210,7 @@ The Spectrum uses 64KB of addressable memory:
 ```
 
 Key memory constants:
+
 - `SPETTRUM_VRAM_START = 0x4000` - Video RAM base address
 - `SPETTRUM_VRAM_SIZE = 6912` - Total VRAM size (bitmap + attributes)
 
@@ -258,18 +266,21 @@ clang -Wall -Wextra -O2 -pthread -o bin/spettrum main.c obj/z80.o obj/ula.o obj/
 ## Common Debugging Workflows
 
 ### Trace Program Execution
+
 ```bash
 ./bin/spettrum --rom rom/ZX_Spectrum_48k.rom --disassemble debug.log
 # Examine debug.log for instruction sequence and PC flow
 ```
 
 ### Check for Memory Access Anomalies
+
 - Run emulator normally or with a test ROM
 - After completion, check console output for warnings about:
   - PC executing in video RAM (indicates jump into graphics)
   - SP in video RAM (indicates stack corruption)
 
 ### Render Mode Comparison
+
 ```bash
 # Block mode (2x2) - faster but coarser
 ./bin/spettrum --rom rom/ZX_Spectrum_48k.rom --render-mode block
