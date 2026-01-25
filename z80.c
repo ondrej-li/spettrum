@@ -69,11 +69,14 @@ static int exec_opcode_ddfd(z80_emulator_t *const z, uint8_t opcode, uint16_t *c
 
 /**
  * Internal I/O read with callback support
+ * @param port Full 16-bit port address (high byte may contain row selector for keyboard)
  */
-static uint8_t z80_read_io_internal(z80_emulator_t *z80, uint8_t port)
+static uint8_t z80_read_io_internal(z80_emulator_t *z80, uint16_t port)
 {
+    uint8_t port_low = port & 0xFF; // Use low byte for port callback lookup
+
     // Check for port-specific callback first
-    if (z80->port_callbacks[port].read_fn)
+    if (z80->port_callbacks[port_low].read_fn)
     {
         void *io_data = z80->user_data;
         if (z80->user_data)
@@ -81,7 +84,7 @@ static uint8_t z80_read_io_internal(z80_emulator_t *z80, uint8_t port)
             z80_callback_context_t *ctx = (z80_callback_context_t *)z80->user_data;
             io_data = ctx->io_data;
         }
-        return z80->port_callbacks[port].read_fn(io_data, port);
+        return z80->port_callbacks[port_low].read_fn(io_data, port);
     }
 
     // Fall back to generic I/O callback
@@ -100,11 +103,19 @@ static uint8_t z80_read_io_internal(z80_emulator_t *z80, uint8_t port)
 
 /**
  * Internal I/O write with callback support
+ * @param port Full 16-bit port address (high byte may contain additional info)
  */
-static void z80_write_io_internal(z80_emulator_t *z80, uint8_t port, uint8_t value)
+static void z80_write_io_internal(z80_emulator_t *z80, uint16_t port, uint8_t value)
 {
+    uint8_t port_low = port & 0xFF; // Use low byte for port callback lookup
+
+    if (port_low == 0xFE)
+    {
+        fprintf(stderr, "[DEBUG z80] z80_write_io_internal: port=0x%04X, value=0x%02X\n", port, value);
+    }
+
     // Check for port-specific callback first
-    if (z80->port_callbacks[port].write_fn)
+    if (z80->port_callbacks[port_low].write_fn)
     {
         void *io_data = z80->user_data;
         if (z80->user_data)
@@ -112,7 +123,7 @@ static void z80_write_io_internal(z80_emulator_t *z80, uint8_t port, uint8_t val
             z80_callback_context_t *ctx = (z80_callback_context_t *)z80->user_data;
             io_data = ctx->io_data;
         }
-        z80->port_callbacks[port].write_fn(io_data, port, value);
+        z80->port_callbacks[port_low].write_fn(io_data, port, value);
         return;
     }
 
@@ -705,7 +716,9 @@ static inline void cpd(z80_emulator_t *const z)
 
 static void in_r_c(z80_emulator_t *const z, uint8_t *r)
 {
-    *r = z80_read_io_internal(z, z->regs.c);
+    // Full 16-bit port address: high byte = B, low byte = C
+    uint16_t port = ((uint16_t)z->regs.b << 8) | z->regs.c;
+    *r = z80_read_io_internal(z, port);
     z->regs.zf = *r == 0;
     z->regs.sf = *r >> 7;
     z->regs.pf = parity(*r);
@@ -715,7 +728,9 @@ static void in_r_c(z80_emulator_t *const z, uint8_t *r)
 
 static void ini(z80_emulator_t *const z)
 {
-    uint8_t val = z80_read_io_internal(z, z->regs.c);
+    // Full 16-bit port address: high byte = B, low byte = C
+    uint16_t port = ((uint16_t)z->regs.b << 8) | z->regs.c;
+    uint8_t val = z80_read_io_internal(z, port);
     wb(z, get_hl(z), val);
     set_hl(z, get_hl(z) + 1);
     z->regs.b -= 1;
@@ -733,7 +748,9 @@ static void ind(z80_emulator_t *const z)
 
 static void outi(z80_emulator_t *const z)
 {
-    z80_write_io_internal(z, z->regs.c, rb(z, get_hl(z)));
+    // Full 16-bit port address: high byte = B, low byte = C
+    uint16_t port = ((uint16_t)z->regs.b << 8) | z->regs.c;
+    z80_write_io_internal(z, port, rb(z, get_hl(z)));
     set_hl(z, get_hl(z) + 1);
     z->regs.b -= 1;
     z->regs.zf = z->regs.b == 0;
@@ -1952,8 +1969,10 @@ int exec_opcode(z80_emulator_t *const z, uint8_t opcode)
 
     case 0xDB:
     {
-        const uint8_t port = nextb(z);
+        const uint8_t port_low = nextb(z);
         const uint8_t a = z->regs.a;
+        // Full 16-bit port address: high byte = A, low byte = immediate operand
+        const uint16_t port = (a << 8) | port_low;
         z->regs.a = z80_read_io_internal(z, port);
         z->regs.mem_ptr = (a << 8) | (z->regs.a + 1);
     }
@@ -1961,9 +1980,11 @@ int exec_opcode(z80_emulator_t *const z, uint8_t opcode)
 
     case 0xD3:
     {
-        const uint8_t port = nextb(z);
+        const uint8_t port_low = nextb(z);
+        // Full 16-bit port address: high byte = A, low byte = immediate operand
+        const uint16_t port = (z->regs.a << 8) | port_low;
         z80_write_io_internal(z, port, z->regs.a);
-        z->regs.mem_ptr = (port + 1) | (z->regs.a << 8);
+        z->regs.mem_ptr = (port_low + 1) | (z->regs.a << 8);
     }
     break; // out (n), a
 

@@ -62,12 +62,15 @@ uint8_t keyboard_get_row_selector(void);
  * Returns the key states for whichever row was most recently selected
  * via keyboard_set_row_selector().
  *
- * @param port The port address (0xFE or variants; not used, included for API compatibility)
- * @return 8-bit value representing key states in the selected row:
+ * @param port The full 16-bit port address. For Spectrum keyboard:
+ *             - Low byte: 0xFE (ULA port)
+ *             - High byte: Row selector bitmask (active-low)
+ *             The high byte determines which keyboard rows to scan.
+ * @return 8-bit value representing key states in the selected row(s):
  *         - Bits 0-4: Key states (0=pressed, 1=released)
  *         - Bits 5-7: Always set to 1 (per Spectrum ROM spec)
  */
-uint8_t keyboard_read_port(uint8_t port);
+uint8_t keyboard_read_port(uint16_t port);
 
 /**
  * Set a simulated key for testing (for command-line key injection)

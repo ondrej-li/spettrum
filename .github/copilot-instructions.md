@@ -103,7 +103,7 @@ To capture detailed instruction-level debugging information:
 This generates `disasm.log` containing:
 
 - **Program Counter (PC)** - Instruction address
-- **Opcodes** - Raw machine code bytes
+- **Opcodes** - Raw machine code bytes without any prefix - 0xFE is simply FE
 - **Mnemonics** - Human-readable Z80 assembly instruction names
 - **Operands** - Instruction arguments and addressing modes
 - **CPU State** - Register and flag values at each instruction

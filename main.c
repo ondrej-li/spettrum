@@ -318,7 +318,7 @@ static void emulator_write_memory(void *user_data, uint16_t addr, uint8_t value)
  * This handler queries the current host keyboard state and returns it
  * in Spectrum keyboard matrix format.
  */
-static uint8_t keyboard_read_handler(void *user_data, uint8_t port)
+static uint8_t keyboard_read_handler(void *user_data, uint16_t port)
 {
     (void)user_data; // Not needed for stateless handler
     return keyboard_read_port(port);
@@ -328,7 +328,7 @@ static uint8_t keyboard_read_handler(void *user_data, uint8_t port)
  * Generic I/O read callback - fallback for unregistered ports
  * Returns 0xFF (all bits set) for unimplemented ports
  */
-static uint8_t generic_io_read(void *user_data, uint8_t port)
+static uint8_t generic_io_read(void *user_data, uint16_t port)
 {
     (void)user_data; // Not needed
     (void)port;      // Not needed
@@ -339,7 +339,7 @@ static uint8_t generic_io_read(void *user_data, uint8_t port)
  * Generic I/O write callback - fallback for unregistered ports
  * Handles border color (port 0xFE bits 0-2), keyboard row selection, and other ports
  */
-static void generic_io_write(void *user_data, uint8_t port, uint8_t value)
+static void generic_io_write(void *user_data, uint16_t port, uint8_t value)
 {
     z80_callback_context_t *ctx = (z80_callback_context_t *)user_data;
     if (!ctx || !ctx->io_data)
@@ -350,8 +350,10 @@ static void generic_io_write(void *user_data, uint8_t port, uint8_t value)
         return;
 
     // Port 0xFE - ULA control and keyboard row selection
-    if (port == 0xFE)
+    if ((port & 0xFF) == 0xFE)
     {
+        fprintf(stderr, "[DEBUG] generic_io_write: port=0x%04X, value=0x%02X\n", port, value);
+
         // Bits 0-2: border color
         uint8_t border_color = value & 0x07;
         ula_set_border_color(emulator->display, border_color);

@@ -38,8 +38,10 @@ typedef struct
 } z80_registers_t;
 
 // Function pointer types for I/O callbacks
-typedef uint8_t (*z80_read_io_t)(void *user_data, uint8_t port);
-typedef void (*z80_write_io_t)(void *user_data, uint8_t port, uint8_t value);
+// Note: port is 16-bit to support Spectrum keyboard scanning where
+// the high byte contains the row selector (e.g., IN A,(n) uses (A<<8)|n)
+typedef uint8_t (*z80_read_io_t)(void *user_data, uint16_t port);
+typedef void (*z80_write_io_t)(void *user_data, uint16_t port, uint8_t value);
 
 // Function pointer types for memory callbacks
 typedef uint8_t (*z80_read_memory_t)(void *user_data, uint16_t addr);
