@@ -352,8 +352,6 @@ static void generic_io_write(void *user_data, uint16_t port, uint8_t value)
     // Port 0xFE - ULA control and keyboard row selection
     if ((port & 0xFF) == 0xFE)
     {
-        fprintf(stderr, "[DEBUG] generic_io_write: port=0x%04X, value=0x%02X\n", port, value);
-
         // Bits 0-2: border color
         uint8_t border_color = value & 0x07;
         ula_set_border_color(emulator->display, border_color);
@@ -420,8 +418,8 @@ static spettrum_emulator_t *emulator_init(ula_render_mode_t render_mode)
     }
 
     // Set generic I/O callbacks (fallback for all ports)
-    z80_register_port_in(emulator->cpu, 0x00, generic_io_read);   // Default read handler for all ports
-    z80_register_port_out(emulator->cpu, 0x00, generic_io_write); // Default write handler for all ports
+    emulator->cpu->read_io = generic_io_read;   // Default read handler for all ports
+    emulator->cpu->write_io = generic_io_write; // Default write handler for all ports
 
     // Register keyboard port handlers (override the generic handler for these ports)
     // Each port reads a different row of the keyboard matrix
