@@ -23,6 +23,7 @@
 #include "main.h"
 #include "disasm.h"
 #include "keyboard.h"
+#include "z80snapshot.h"
 
 // Global emulator reference for signal handling
 static spettrum_emulator_t *g_emulator = NULL;
@@ -278,6 +279,7 @@ static void print_help(const char *program_name)
     printf("  -h, --help                Show this help message\n");
     printf("  -v, --version             Show version information\n");
     printf("  -r, --rom FILE            Load ROM from file\n");
+    printf("  -s, --snapshot FILE       Load Z80 snapshot file (restores CPU and memory state)\n");
     printf("  -d, --disk FILE           Load disk image from file\n");
     printf("  -i, --instructions NUM    Number of instructions to execute (0=unlimited, default=0)\n");
     printf("  -D, --disassemble FILE    Write disassembly to FILE\n");
@@ -775,6 +777,7 @@ static int emulator_run(spettrum_emulator_t *emulator, uint64_t instructions_to_
 int main(int argc, char *argv[])
 {
     const char *rom_file = NULL;
+    const char *snapshot_file = NULL;
     const char *disk_file = NULL;
     const char *disasm_file = NULL;
     const char *simulated_keys = NULL;                     // Simulated key string for testing
@@ -786,6 +789,7 @@ int main(int argc, char *argv[])
         {"help", no_argument, 0, 'h'},
         {"version", no_argument, 0, 'v'},
         {"rom", required_argument, 0, 'r'},
+        {"snapshot", required_argument, 0, 's'},
         {"disk", required_argument, 0, 'd'},
         {"instructions", required_argument, 0, 'i'},
         {"disassemble", required_argument, 0, 'D'},
@@ -796,7 +800,7 @@ int main(int argc, char *argv[])
     // Parse command-line arguments
     int option_index = 0;
     int c;
-    while ((c = getopt_long(argc, argv, "hvr:d:i:D:m:k:", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "hvr:s:d:i:D:m:k:", long_options, &option_index)) != -1)
     {
         switch (c)
         {
@@ -808,6 +812,9 @@ int main(int argc, char *argv[])
             return EXIT_SUCCESS;
         case 'r':
             rom_file = optarg;
+            break;
+        case 's':
+            snapshot_file = optarg;
             break;
         case 'd':
             disk_file = optarg;
@@ -911,6 +918,17 @@ int main(int argc, char *argv[])
         if (emulator_load_rom(emulator, rom_file) != 0)
         {
             fprintf(stderr, "Error: Failed to load ROM from '%s'\n", rom_file);
+            emulator_cleanup(emulator);
+            return EXIT_FAILURE;
+        }
+    }
+
+    // Load Z80 snapshot if specified (restores CPU and memory state)
+    if (snapshot_file)
+    {
+        if (z80_snapshot_load(snapshot_file, emulator->cpu, emulator->memory) != 0)
+        {
+            fprintf(stderr, "Error: Failed to load Z80 snapshot from '%s'\n", snapshot_file);
             emulator_cleanup(emulator);
             return EXIT_FAILURE;
         }

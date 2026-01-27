@@ -17,6 +17,7 @@
 # Executables
 /bin/
 /obj/
+/z80s/
 
 
 # ROM files
@@ -39,3 +40,4 @@ Makefile.cmake
 # Dependencies
 *.out
 *.log
+*.z80
