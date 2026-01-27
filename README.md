@@ -1,92 +1,168 @@
-# ZX Spectrum ULA Terminal Renderer
+# Spettrum - Z80 Emulator
 
-A high-performance terminal-based renderer for ZX Spectrum video RAM using Unicode block characters, with proper 50Hz frame timing.
+A high-performance Z80 CPU emulator for the Sinclair ZX Spectrum computer with terminal-based display rendering. The project implements authentic Spectrum emulation with real-time video rendering and comprehensive debugging tools.
 
 ## Features
 
-- **Efficient Pixel-to-Character Conversion**: Converts 2x2 pixel blocks from ZX Spectrum VRAM to Unicode block characters (▗, ▖, ▄, etc.)
-- **Thread-Safe Rendering**: Uses mutex-protected matrix updates for concurrent VRAM reads and terminal writes
-- **50Hz Frame Timing**: Measures rendering time and sleeps for remaining frame duration to maintain exact 50Hz refresh rate
-- **Terminal Control**: Uses ANSI escape codes to position cursor at top-left and hide cursor during rendering
+- **Full Z80 CPU Emulation**: Complete instruction set support for the 8-bit Z80 processor
+- **ULA Graphics Rendering**: Real-time video RAM to terminal rendering using Unicode block and braille characters
+- **50Hz Frame Timing**: Accurate refresh rate matching original Spectrum hardware
+- **ROM Loading**: Support for loading Spectrum ROM images
+- **Keyboard Emulation**: Host system keyboard mapped to Spectrum keyboard matrix
+- **Debugging Tools**: Disassembly logging, CPU state inspection, and anomaly detection
+- **Thread-Safe Architecture**: Concurrent CPU execution and terminal rendering with mutex protection
 
 ## Building
 
+### Prerequisites
+
+- **clang** compiler (or any C compiler)
+- **POSIX-compatible system** (macOS, Linux)
+- **pthread** library
+
+### Build Commands
+
 ```bash
-make test      # Run unit tests
-make demo      # Build the demo application
-make run-demo  # Run the demo (runs for 10 seconds with animation)
+make              # Build the executable
+make debug        # Build with debug symbols
+make run          # Run the emulator
+make test         # Build and run all tests
 ```
+
+The executable is generated at `bin/spettrum`.
+
+## Running the Emulator
+
+### Basic Execution
+
+```bash
+./bin/spettrum --help                                      # View available options
+./bin/spettrum --rom rom/ZX_Spectrum_48k.rom              # Run with 48K ROM
+```
+
+### Command-Line Options
+
+```
+  -h, --help                 Show help message
+  -v, --version              Show version information
+  -r, --rom FILE             Load ROM from file
+  -d, --disk FILE            Load disk image from file
+  -i, --instructions NUM     Number of instructions to execute (0=unlimited)
+  -D, --disassemble FILE     Write disassembly output to FILE
+  -m, --render-mode MODE     Rendering mode: 'block' (2x2) or 'braille' (2x4, default)
+  -k, --simulate-key CHAR    Simulate a key press for testing
+```
+
+## ROM Files
+
+The project includes ROM images in the `rom/` directory:
+
+- **ZX_Spectrum_48k.rom** - Standard Sinclair Spectrum 48K ROM (essential for normal operation)
+- **DiagROMv.173.rom** - Spectrum Diagnostic ROM (useful for system verification)
+- **test.rom** - Test ROM image
 
 ## Project Structure
 
-- `ula.c` / `ula.h` - Core ULA (Uncommitted Logic Array) module
-  - `convert_vram_to_matrix()` - Convert VRAM to character matrix
-  - `ula_render_to_terminal()` - Render matrix with 50Hz timing
-  - `ula_render_thread_func()` - Thread function for continuous rendering
-- `demo.c` - Demonstration program with animated patterns
-- `tests/` - Unit tests for pixel conversion
-  - Tests for various pixel patterns and block characters
-  - All 10 tests passing
+```
+spettrum/
+├── z80.c / z80.h           Z80 CPU emulation core
+├── ula.c / ula.h           Video RAM (VRAM) to terminal renderer
+├── disasm.c / disasm.h     Disassembly and instruction formatting
+├── keyboard.c / keyboard.h Keyboard input handling
+├── tap.c / tap.h           TAP file format support
+├── z80snapshot.c / .h      Z80 snapshot file handling
+├── main.c / main.h         Entry point and command-line parsing
+├── Makefile                Build system
+├── rom/                    ROM images
+├── tests/                  Unit tests
+└── z80s/                   Z80 snapshot files
+```
 
 ## Memory Layout
 
-ZX Spectrum video RAM uses a specific layout:
+The Spectrum uses 64KB of addressable memory:
 
-- Each byte represents 8 horizontal pixels in a single row
-- Byte address: `y * 32 + (x / 8)`
-- Bit position: `7 - (x % 8)` (MSB = leftmost pixel)
-- Resolution: 256×192 pixels = 128×96 characters
-
-## Rendering Process
-
-1. **Pixel Retrieval**: Get 4 pixels from 2×2 block (TL, TR, BL, BR)
-2. **Pattern Generation**: Combine pixels into 4-bit pattern (0-15)
-3. **Character Mapping**: Select Unicode block character based on pattern
-4. **Frame Timing**:
-   - Start 20ms frame timer
-   - Write 96 lines × 128 characters to terminal
-   - Calculate elapsed time
-   - Sleep for remaining time to maintain 50Hz
-
-## 50Hz Timing Details
-
-- Frame duration: 20ms (1/50Hz)
-- Timer: Uses `clock_gettime(CLOCK_MONOTONIC, ...)`
-- Sleep: Uses `usleep()` for remaining frame time
-- Accurate to microsecond precision
-
-## Example Usage
-
-```c
-// Set some pixels in VRAM
-set_pixel(vram, 0, 0, 1);
-set_pixel(vram, 1, 0, 1);
-
-// Update matrix
-convert_vram_to_matrix(vram);
-
-// Render to terminal at 50Hz
-ula_render_to_terminal();
+```
+0x0000 - 0x3FFF   ROM (16 KB)
+0x4000 - 0x5AFF   Video RAM (6 KB bitmap)
+0x5B00 - 0x5BFF   Attribute RAM (256 B colors)
+0x5C00 - 0xFFFF   User RAM (42 KB)
 ```
 
-## Unicode Block Characters
+## Display Rendering
 
-The renderer uses 16 Unicode block characters to represent all 2×2 pixel patterns:
+### Unicode Block Characters (2x2 Mode)
+
+Converts 2x2 pixel blocks to Unicode block characters for efficient terminal display:
 
 ```
 0000 → ' '   1000 → ▘   1100 → ▀
 0001 → ▗     1001 → ▚   1101 → ▜
 0010 → ▖     1010 → ▌   1110 → ▛
 0011 → ▄     1011 → ▙   1111 → █
-0100 → ▝
-0101 → ▐
-0110 → ▞
-0111 → ▟
+0100 → ▝     1101 → ▝
+0101 → ▐     1110 → ▞
+0110 → ▞     1111 → ▟
 ```
 
-## Performance Notes
+### Braille Characters (2x4 Mode)
 
-- No dynamic memory allocation in rendering loop
-- Minimal mutex contention
+Uses Braille unicode patterns for higher resolution display (default mode).
+
+### Frame Timing
+
+- Maintains exactly **50Hz** refresh rate (20ms per frame)
+- Uses `clock_gettime()` for precise timing
+- Sleeps for remaining frame time after rendering
+
+## Debugging
+
+### Disassembly Output
+
+Capture detailed instruction-level debugging:
+
+```bash
+./bin/spettrum --rom rom/ZX_Spectrum_48k.rom --disassemble debug.log
+```
+
+Generated log includes:
+
+- Program Counter (PC)
+- Raw opcodes
+- Assembly mnemonics
+- Operands and addressing modes
+- CPU state (registers and flags)
+
+### Debug Features
+
+- **PC History**: Tracks last 10 program counter values
+- **Opcode History**: Tracks last 10 executed opcodes
+- **Anomaly Detection**: Warns when PC or SP enter video RAM (indicating bugs)
+- **Instruction Count**: Total instructions executed
+- **CPU State Inspection**: Registers, flags, and memory state
+
+## Testing
+
+Run tests with:
+
+```bash
+cd tests
+make
+./test_z80       # Z80 CPU instruction tests
+./test_ula       # Graphics rendering tests
+./test_bit       # Bit manipulation tests
+```
+
+## Performance
+
+- No dynamic memory allocation in rendering loops
 - Efficient bit operations for pixel access
-- Direct terminal writes (unbuffered fflush for cursor positioning)
+- Minimal mutex contention for thread-safe VRAM access
+- Direct terminal writes for low-latency display updates
+- Typical execution speed: Millions of instructions per second
+
+## Version
+
+Current version: 0.1.0 (Beta)
+
+Check with: `./bin/spettrum --version`

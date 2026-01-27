@@ -13,6 +13,7 @@ DISASM_OBJ = $(OBJ_DIR)/disasm.o
 Z80_OBJ = $(OBJ_DIR)/z80.o
 Z80_SNAPSHOT_OBJ = $(OBJ_DIR)/z80snapshot.o
 KEYBOARD_OBJ = $(OBJ_DIR)/keyboard.o
+TAP_OBJ = $(OBJ_DIR)/tap.o
 SOURCES = $(wildcard $(SRC_DIR)/*.c)
 OBJECTS = $(SOURCES:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
 
@@ -23,8 +24,8 @@ all: $(TARGET)
 debug: CFLAGS = $(CFLAGS_DEBUG)
 debug: $(TARGET)
 
-$(TARGET): main.c $(Z80_OBJ) $(ULA_OBJ) $(DISASM_OBJ) $(Z80_SNAPSHOT_OBJ) $(KEYBOARD_OBJ) | $(BIN_DIR)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ main.c $(Z80_OBJ) $(ULA_OBJ) $(DISASM_OBJ) $(Z80_SNAPSHOT_OBJ) $(KEYBOARD_OBJ)
+$(TARGET): main.c $(Z80_OBJ) $(ULA_OBJ) $(DISASM_OBJ) $(Z80_SNAPSHOT_OBJ) $(KEYBOARD_OBJ) $(TAP_OBJ) | $(BIN_DIR)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ main.c $(Z80_OBJ) $(ULA_OBJ) $(DISASM_OBJ) $(Z80_SNAPSHOT_OBJ) $(KEYBOARD_OBJ) $(TAP_OBJ)
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -55,6 +56,9 @@ $(Z80_SNAPSHOT_OBJ): z80snapshot.c z80snapshot.h | $(OBJ_DIR)
 
 $(KEYBOARD_OBJ): keyboard.c keyboard.h | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -c -o $@ keyboard.c
+
+$(TAP_OBJ): tap.c tap.h | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -c -o $@ tap.c
 
 test:
 	$(MAKE) -C tests run
