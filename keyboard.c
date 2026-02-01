@@ -81,6 +81,114 @@ static int is_key_pressed_state(unsigned char key)
     return 0;
 }
 
+// Forward declaration
+static void add_pressed_key(unsigned char key);
+
+/**
+ * Translate a character input into appropriate Spectrum key(s)
+ * Handles uppercase (via CAPS SHIFT + letter), special characters (via SYMBOL SHIFT + key),
+ * and special keys like backspace and arrows.
+ */
+static void translate_and_add_key(unsigned char ch)
+{
+    // Backspace: CAPS SHIFT + 0
+    if (ch == 0x08 || ch == 0x7F) // Backspace or DEL
+    {
+        add_pressed_key(0x10); // CAPS SHIFT
+        add_pressed_key('0');
+        return;
+    }
+
+    // Arrow keys via CAPS SHIFT + number:
+    // Up: CAPS SHIFT + 7, Down: CAPS SHIFT + 6, Left: CAPS SHIFT + 5, Right: CAPS SHIFT + 8
+    // These are mapped to special key codes for easier terminal handling
+    if (ch == 'A' - 'A' + 1 || ch == 27) // ESC or special escape marker
+    {
+        // This would need special handling for multi-byte escape sequences
+        // For now, we support direct key codes for arrows (if passed from command-line)
+        return;
+    }
+
+    // Direct arrow key support via special key codes (for programmatic input)
+    // Up arrow: code 128, Down: 129, Left: 130, Right: 131
+    if (ch == 128) // UP
+    {
+        add_pressed_key(0x10); // CAPS SHIFT
+        add_pressed_key('7');
+        return;
+    }
+    if (ch == 129) // DOWN
+    {
+        add_pressed_key(0x10); // CAPS SHIFT
+        add_pressed_key('6');
+        return;
+    }
+    if (ch == 130) // LEFT
+    {
+        add_pressed_key(0x10); // CAPS SHIFT
+        add_pressed_key('5');
+        return;
+    }
+    if (ch == 131) // RIGHT
+    {
+        add_pressed_key(0x10); // CAPS SHIFT
+        add_pressed_key('8');
+        return;
+    }
+
+    // Uppercase letters: add CAPS SHIFT (0x10) + the lowercase letter
+    if (ch >= 'A' && ch <= 'Z')
+    {
+        add_pressed_key(0x10);    // CAPS SHIFT
+        add_pressed_key(ch + 32); // Convert to lowercase
+        return;
+    }
+
+    // Special characters mapped via SYMBOL SHIFT (0x11) + their key
+    // Format: character -> lowercase letter key to press with SYMBOL SHIFT
+    struct
+    {
+        unsigned char ch;
+        unsigned char key;
+    } special_chars[] = {
+        {',', 'n'},  // Comma
+        {'.', 'm'},  // Period
+        {'-', 'j'},  // Minus/Dash
+        {'=', 'l'},  // Equals
+        {'_', 'a'},  // Underscore
+        {':', 'z'},  // Colon
+        {'?', 'c'},  // Question mark
+        {'@', 'q'},  // At sign
+        {'#', '3'},  // Hash
+        {'$', '4'},  // Dollar
+        {'~', '2'},  // Tilde
+        {'^', 'h'},  // Caret
+        {'&', '6'},  // Ampersand
+        {'*', 'b'},  // Asterisk
+        {'{', 'y'},  // Open brace
+        {'}', 'u'},  // Close brace
+        {'[', 'd'},  // Open bracket
+        {']', 'g'},  // Close bracket
+        {';', 'o'},  // Semicolon
+        {'\'', 'p'}, // Quote
+        {0, 0}       // Terminator
+    };
+
+    // Check special characters
+    for (int i = 0; special_chars[i].ch != 0; i++)
+    {
+        if (ch == special_chars[i].ch)
+        {
+            add_pressed_key(0x11); // SYMBOL SHIFT (represented as 0x11)
+            add_pressed_key(special_chars[i].key);
+            return;
+        }
+    }
+
+    // Regular character: add as-is (for lowercase letters, digits, space, etc.)
+    add_pressed_key(ch);
+}
+
 /**
  * Update key states: remove any keys that have expired (held for KEY_HOLD_TIME_MS)
  */
@@ -137,9 +245,8 @@ static void keyboard_poll_stdin(void)
         if (nread != 1)
             break; // No more input available
 
-        // For now, treat any input as a key press
-        // In a real implementation, you'd track key up/down separately
-        add_pressed_key(ch);
+        // Translate the input character to appropriate Spectrum key(s)
+        translate_and_add_key(ch);
     }
 }
 
@@ -165,7 +272,9 @@ void keyboard_cleanup(void)
 
 /**
  * Set a simulated key for testing (for command-line key injection)
- * Adds the key to the pressed set so it will be detected in subsequent scans
+ * Translates the character input to appropriate Spectrum key(s) with support for:
+ * - Uppercase letters (via CAPS SHIFT + letter)
+ * - Special characters (via SYMBOL SHIFT + key)
  *
  * @param key The ASCII character to simulate as pressed
  */
@@ -173,7 +282,7 @@ void keyboard_set_simulated_key(char key)
 {
     if (key != 0)
     {
-        add_pressed_key((unsigned char)key);
+        translate_and_add_key((unsigned char)key);
     }
 }
 
@@ -414,8 +523,8 @@ uint8_t keyboard_read_port(uint16_t port)
         {
             result &= ~0x01;
         }
-        // Bit 1: SYMBOL SHIFT (CTRL on modern keyboards)
-        if (is_key_pressed_state(17))
+        // Bit 1: SYMBOL SHIFT (CTRL on modern keyboards, or 0x11 from character translation)
+        if (is_key_pressed_state(17) || is_key_pressed_state(0x11))
         {
             result &= ~0x02;
         }

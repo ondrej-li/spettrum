@@ -21,6 +21,20 @@
 static struct termios orig_termios;
 static int termios_saved = 0;
 
+/**
+ * Ensure terminal is restored even on abnormal exit
+ */
+static void ula_emergency_cleanup(void)
+{
+    // Force-restore terminal settings regardless of termios_saved flag
+    // This handles cases where the program crashed before normal cleanup
+    tcsetattr(STDIN_FILENO, TCSANOW, &orig_termios);
+
+    // Try to exit alternate screen and show cursor
+    fprintf(stdout, "\033[?1049l\033[?25h");
+    fflush(stdout);
+}
+
 // Spectrum to ANSI color mapping
 // Spectrum: 0=Black, 1=Blue, 2=Red, 3=Magenta, 4=Green, 5=Cyan, 6=Yellow, 7=White
 // ANSI:     0=Black, 1=Red, 2=Green, 3=Yellow, 4=Blue, 5=Magenta, 6=Cyan, 7=White
@@ -68,6 +82,107 @@ static const char *block_chars[] = {
     "█"  // 1111 -> █ (full)
 };
 
+// Sinclair ZX Spectrum ROM character patterns (8x8 bitmap for each character)
+// Characters 0-31 are control characters (mostly empty), 32-127 are printable ASCII
+static const uint8_t sinclair_font[96][8] = {
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},  /* ASCII  32 (SPACE) */
+    {0x00, 0x10, 0x10, 0x10, 0x10, 0x00, 0x10, 0x00},  /* ASCII  33 ('!') */
+    {0x00, 0x24, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00},  /* ASCII  34 ('"') */
+    {0x00, 0x24, 0x7E, 0x24, 0x24, 0x7E, 0x24, 0x00},  /* ASCII  35 ('#') */
+    {0x00, 0x08, 0x3E, 0x28, 0x3E, 0x0A, 0x3E, 0x08},  /* ASCII  36 ('$') */
+    {0x00, 0x62, 0x64, 0x08, 0x10, 0x26, 0x46, 0x00},  /* ASCII  37 ('%') */
+    {0x00, 0x10, 0x28, 0x10, 0x2A, 0x44, 0x3A, 0x00},  /* ASCII  38 ('&') */
+    {0x00, 0x08, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00},  /* ASCII  39 (''') */
+    {0x00, 0x04, 0x08, 0x08, 0x08, 0x08, 0x04, 0x00},  /* ASCII  40 ('(') */
+    {0x00, 0x20, 0x10, 0x10, 0x10, 0x10, 0x20, 0x00},  /* ASCII  41 (')') */
+    {0x00, 0x00, 0x14, 0x08, 0x3E, 0x08, 0x14, 0x00},  /* ASCII  42 ('*') */
+    {0x00, 0x00, 0x08, 0x08, 0x3E, 0x08, 0x08, 0x00},  /* ASCII  43 ('+') */
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x08, 0x10},  /* ASCII  44 (',') */
+    {0x00, 0x00, 0x00, 0x00, 0x3E, 0x00, 0x00, 0x00},  /* ASCII  45 ('-') */
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00},  /* ASCII  46 ('.') */
+    {0x00, 0x00, 0x02, 0x04, 0x08, 0x10, 0x20, 0x00},  /* ASCII  47 ('/') */
+    {0x00, 0x3C, 0x46, 0x4A, 0x52, 0x62, 0x3C, 0x00},  /* ASCII  48 ('0') */
+    {0x00, 0x18, 0x28, 0x08, 0x08, 0x08, 0x3E, 0x00},  /* ASCII  49 ('1') */
+    {0x00, 0x3C, 0x42, 0x02, 0x3C, 0x40, 0x7E, 0x00},  /* ASCII  50 ('2') */
+    {0x00, 0x3C, 0x42, 0x0C, 0x02, 0x42, 0x3C, 0x00},  /* ASCII  51 ('3') */
+    {0x00, 0x08, 0x18, 0x28, 0x48, 0x7E, 0x08, 0x00},  /* ASCII  52 ('4') */
+    {0x00, 0x7E, 0x40, 0x7C, 0x02, 0x42, 0x3C, 0x00},  /* ASCII  53 ('5') */
+    {0x00, 0x3C, 0x40, 0x7C, 0x42, 0x42, 0x3C, 0x00},  /* ASCII  54 ('6') */
+    {0x00, 0x7E, 0x02, 0x04, 0x08, 0x10, 0x10, 0x00},  /* ASCII  55 ('7') */
+    {0x00, 0x3C, 0x42, 0x3C, 0x42, 0x42, 0x3C, 0x00},  /* ASCII  56 ('8') */
+    {0x00, 0x3C, 0x42, 0x42, 0x3E, 0x02, 0x3C, 0x00},  /* ASCII  57 ('9') */
+    {0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x10, 0x00},  /* ASCII  58 (':') */
+    {0x00, 0x00, 0x10, 0x00, 0x00, 0x10, 0x10, 0x20},  /* ASCII  59 (';') */
+    {0x00, 0x00, 0x04, 0x08, 0x10, 0x08, 0x04, 0x00},  /* ASCII  60 ('<') */
+    {0x00, 0x00, 0x00, 0x3E, 0x00, 0x3E, 0x00, 0x00},  /* ASCII  61 ('=') */
+    {0x00, 0x00, 0x10, 0x08, 0x04, 0x08, 0x10, 0x00},  /* ASCII  62 ('>') */
+    {0x00, 0x3C, 0x42, 0x04, 0x08, 0x00, 0x08, 0x00},  /* ASCII  63 ('?') */
+    {0x00, 0x3C, 0x4A, 0x56, 0x5E, 0x40, 0x3C, 0x00},  /* ASCII  64 ('@') */
+    {0x00, 0x3C, 0x42, 0x42, 0x7E, 0x42, 0x42, 0x00},  /* ASCII  65 ('A') */
+    {0x00, 0x7C, 0x42, 0x7C, 0x42, 0x42, 0x7C, 0x00},  /* ASCII  66 ('B') */
+    {0x00, 0x3C, 0x42, 0x40, 0x40, 0x42, 0x3C, 0x00},  /* ASCII  67 ('C') */
+    {0x00, 0x78, 0x44, 0x42, 0x42, 0x44, 0x78, 0x00},  /* ASCII  68 ('D') */
+    {0x00, 0x7E, 0x40, 0x7C, 0x40, 0x40, 0x7E, 0x00},  /* ASCII  69 ('E') */
+    {0x00, 0x7E, 0x40, 0x7C, 0x40, 0x40, 0x40, 0x00},  /* ASCII  70 ('F') */
+    {0x00, 0x3C, 0x42, 0x40, 0x4E, 0x42, 0x3C, 0x00},  /* ASCII  71 ('G') */
+    {0x00, 0x42, 0x42, 0x7E, 0x42, 0x42, 0x42, 0x00},  /* ASCII  72 ('H') */
+    {0x00, 0x3E, 0x08, 0x08, 0x08, 0x08, 0x3E, 0x00},  /* ASCII  73 ('I') */
+    {0x00, 0x02, 0x02, 0x02, 0x42, 0x42, 0x3C, 0x00},  /* ASCII  74 ('J') */
+    {0x00, 0x44, 0x48, 0x70, 0x48, 0x44, 0x42, 0x00},  /* ASCII  75 ('K') */
+    {0x00, 0x40, 0x40, 0x40, 0x40, 0x40, 0x7E, 0x00},  /* ASCII  76 ('L') */
+    {0x00, 0x42, 0x66, 0x5A, 0x42, 0x42, 0x42, 0x00},  /* ASCII  77 ('M') */
+    {0x00, 0x42, 0x62, 0x52, 0x4A, 0x46, 0x42, 0x00},  /* ASCII  78 ('N') */
+    {0x00, 0x3C, 0x42, 0x42, 0x42, 0x42, 0x3C, 0x00},  /* ASCII  79 ('O') */
+    {0x00, 0x7C, 0x42, 0x42, 0x7C, 0x40, 0x40, 0x00},  /* ASCII  80 ('P') */
+    {0x00, 0x3C, 0x42, 0x42, 0x52, 0x4A, 0x3C, 0x00},  /* ASCII  81 ('Q') */
+    {0x00, 0x7C, 0x42, 0x42, 0x7C, 0x44, 0x42, 0x00},  /* ASCII  82 ('R') */
+    {0x00, 0x3C, 0x40, 0x3C, 0x02, 0x42, 0x3C, 0x00},  /* ASCII  83 ('S') */
+    {0x00, 0xFE, 0x10, 0x10, 0x10, 0x10, 0x10, 0x00},  /* ASCII  84 ('T') */
+    {0x00, 0x42, 0x42, 0x42, 0x42, 0x42, 0x3C, 0x00},  /* ASCII  85 ('U') */
+    {0x00, 0x42, 0x42, 0x42, 0x42, 0x24, 0x18, 0x00},  /* ASCII  86 ('V') */
+    {0x00, 0x42, 0x42, 0x42, 0x42, 0x5A, 0x24, 0x00},  /* ASCII  87 ('W') */
+    {0x00, 0x42, 0x24, 0x18, 0x18, 0x24, 0x42, 0x00},  /* ASCII  88 ('X') */
+    {0x00, 0x82, 0x44, 0x28, 0x10, 0x10, 0x10, 0x00},  /* ASCII  89 ('Y') */
+    {0x00, 0x7E, 0x04, 0x08, 0x10, 0x20, 0x7E, 0x00},  /* ASCII  90 ('Z') */
+    {0x00, 0x0E, 0x08, 0x08, 0x08, 0x08, 0x0E, 0x00},  /* ASCII  91 ('[') */
+    {0x00, 0x00, 0x40, 0x20, 0x10, 0x08, 0x04, 0x00},  /* ASCII  92 ('\') */
+    {0x00, 0x70, 0x10, 0x10, 0x10, 0x10, 0x70, 0x00},  /* ASCII  93 (']') */
+    {0x00, 0x10, 0x38, 0x54, 0x10, 0x10, 0x10, 0x00},  /* ASCII  94 ('^') */
+    {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF},  /* ASCII  95 ('_') */
+    {0x00, 0x1C, 0x22, 0x78, 0x20, 0x20, 0x7E, 0x00},  /* ASCII  96 ('`') */
+    {0x00, 0x00, 0x38, 0x04, 0x3C, 0x44, 0x3C, 0x00},  /* ASCII  97 ('a') */
+    {0x00, 0x20, 0x20, 0x3C, 0x22, 0x22, 0x3C, 0x00},  /* ASCII  98 ('b') */
+    {0x00, 0x00, 0x1C, 0x20, 0x20, 0x20, 0x1C, 0x00},  /* ASCII  99 ('c') */
+    {0x00, 0x04, 0x04, 0x3C, 0x44, 0x44, 0x3C, 0x00},  /* ASCII 100 ('d') */
+    {0x00, 0x00, 0x38, 0x44, 0x78, 0x40, 0x3C, 0x00},  /* ASCII 101 ('e') */
+    {0x00, 0x0C, 0x10, 0x18, 0x10, 0x10, 0x10, 0x00},  /* ASCII 102 ('f') */
+    {0x00, 0x00, 0x3C, 0x44, 0x44, 0x3C, 0x04, 0x38},  /* ASCII 103 ('g') */
+    {0x00, 0x40, 0x40, 0x78, 0x44, 0x44, 0x44, 0x00},  /* ASCII 104 ('h') */
+    {0x00, 0x10, 0x00, 0x30, 0x10, 0x10, 0x38, 0x00},  /* ASCII 105 ('i') */
+    {0x00, 0x04, 0x00, 0x04, 0x04, 0x04, 0x24, 0x18},  /* ASCII 106 ('j') */
+    {0x00, 0x20, 0x28, 0x30, 0x30, 0x28, 0x24, 0x00},  /* ASCII 107 ('k') */
+    {0x00, 0x10, 0x10, 0x10, 0x10, 0x10, 0x0C, 0x00},  /* ASCII 108 ('l') */
+    {0x00, 0x00, 0x68, 0x54, 0x54, 0x54, 0x54, 0x00},  /* ASCII 109 ('m') */
+    {0x00, 0x00, 0x78, 0x44, 0x44, 0x44, 0x44, 0x00},  /* ASCII 110 ('n') */
+    {0x00, 0x00, 0x38, 0x44, 0x44, 0x44, 0x38, 0x00},  /* ASCII 111 ('o') */
+    {0x00, 0x00, 0x78, 0x44, 0x44, 0x78, 0x40, 0x40},  /* ASCII 112 ('p') */
+    {0x00, 0x00, 0x3C, 0x44, 0x44, 0x3C, 0x04, 0x06},  /* ASCII 113 ('q') */
+    {0x00, 0x00, 0x1C, 0x20, 0x20, 0x20, 0x20, 0x00},  /* ASCII 114 ('r') */
+    {0x00, 0x00, 0x38, 0x40, 0x38, 0x04, 0x78, 0x00},  /* ASCII 115 ('s') */
+    {0x00, 0x10, 0x38, 0x10, 0x10, 0x10, 0x0C, 0x00},  /* ASCII 116 ('t') */
+    {0x00, 0x00, 0x44, 0x44, 0x44, 0x44, 0x38, 0x00},  /* ASCII 117 ('u') */
+    {0x00, 0x00, 0x44, 0x44, 0x28, 0x28, 0x10, 0x00},  /* ASCII 118 ('v') */
+    {0x00, 0x00, 0x44, 0x54, 0x54, 0x54, 0x28, 0x00},  /* ASCII 119 ('w') */
+    {0x00, 0x00, 0x44, 0x28, 0x10, 0x28, 0x44, 0x00},  /* ASCII 120 ('x') */
+    {0x00, 0x00, 0x44, 0x44, 0x44, 0x3C, 0x04, 0x38},  /* ASCII 121 ('y') */
+    {0x00, 0x00, 0x7C, 0x08, 0x10, 0x20, 0x7C, 0x00},  /* ASCII 122 ('z') */
+    {0x00, 0x0E, 0x08, 0x30, 0x08, 0x08, 0x0E, 0x00},  /* ASCII 123 ('{') */
+    {0x00, 0x08, 0x08, 0x08, 0x08, 0x08, 0x08, 0x00},  /* ASCII 124 ('|') */
+    {0x00, 0x70, 0x10, 0x0C, 0x10, 0x10, 0x70, 0x00},  /* ASCII 125 ('}') */
+    {0x00, 0x14, 0x28, 0x00, 0x00, 0x00, 0x00, 0x00},  /* ASCII 126 ('~') */
+    {0x3C, 0x42, 0x99, 0xA1, 0xA1, 0x99, 0x42, 0x3C}  /* ASCII 127 */
+};
+
 // Thread-safe output matrix
 typedef struct
 {
@@ -75,6 +190,8 @@ typedef struct
     color_attr_t matrix_colors[OUTPUT_HEIGHT][OUTPUT_WIDTH];
     char braille_matrix[BRAILLE_OUTPUT_HEIGHT][BRAILLE_OUTPUT_WIDTH * 4]; // UTF-8 braille takes 3 bytes + null
     color_attr_t braille_colors[BRAILLE_OUTPUT_HEIGHT][BRAILLE_OUTPUT_WIDTH];
+    char ocr_matrix[OCR_OUTPUT_HEIGHT][OCR_OUTPUT_WIDTH + 1]; // OCR text + null terminator per row
+    color_attr_t ocr_colors[OCR_OUTPUT_HEIGHT][OCR_OUTPUT_WIDTH];
     ula_render_mode_t render_mode;
     uint8_t border_color;
     pthread_mutex_t lock;
@@ -245,6 +362,82 @@ static void get_braille_char(const uint8_t *vram, int x, int y, char *out, color
 }
 
 /**
+ * Compare two 8x8 bitmaps for similarity using Hamming distance
+ * Returns: number of differing pixels (0-64), lower is more similar
+ */
+static int bitmap_distance(const uint8_t bitmap1[8], const uint8_t bitmap2[8])
+{
+    int distance = 0;
+    for (int i = 0; i < 8; i++)
+    {
+        uint8_t xor = bitmap1[i] ^ bitmap2[i];
+        // Count number of 1 bits in xor (Hamming weight)
+        while (xor)
+        {
+            distance += xor & 1;
+            xor >>= 1;
+        }
+    }
+    return distance;
+}
+
+/**
+ * Extract 8x8 bitmap for character block from VRAM
+ * char_col and char_row are 0-31 and 0-23 (character grid positions)
+ */
+static void extract_char_bitmap(const uint8_t *vram, int char_col, int char_row, uint8_t bitmap[8])
+{
+    int pixel_x = char_col * 8;
+    int pixel_y = char_row * 8;
+
+    for (int row = 0; row < 8; row++)
+    {
+        uint8_t byte = 0;
+        for (int col = 0; col < 8; col++)
+        {
+            if (get_pixel(vram, pixel_x + col, pixel_y + row))
+            {
+                byte |= (0x80 >> col); // Set bit from MSB to LSB
+            }
+        }
+        bitmap[row] = byte;
+    }
+}
+
+/**
+ * Recognize character from 8x8 bitmap using font matching
+ * Returns: ASCII character (32-126) or space (32) if not recognized
+ */
+static char recognize_character(const uint8_t bitmap[8])
+{
+    int best_distance = 999;
+    int best_char = 0; // Space character
+
+    // Compare against all printable ASCII characters (32-126)
+    for (int i = 0; i < 96; i++)
+    {
+        int distance = bitmap_distance(bitmap, sinclair_font[i]);
+
+        // Found a perfect or near-perfect match
+        if (distance < best_distance)
+        {
+            best_distance = distance;
+            best_char = i;
+
+            // If exact match found, stop searching
+            if (distance == 0)
+                break;
+        }
+    }
+
+    // Threshold: only accept characters with reasonable match (less than 20% different)
+    if (best_distance > 12) // 12 out of 64 bits = ~19% difference
+        return ' ';         // Return space for unrecognized characters
+
+    return (char)(32 + best_char);
+}
+
+/**
  * Convert entire video RAM to matrix with colors
  * This is the core ULA conversion function
  */
@@ -263,9 +456,30 @@ void convert_vram_to_matrix(const uint8_t *vram, ula_render_mode_t render_mode)
             }
         }
     }
+    else if (render_mode == ULA_RENDER_OCR)
+    {
+        // OCR mode: 32x24 character matrix with text recognition
+        uint8_t bitmap[8];
+        for (int char_row = 0; char_row < OCR_OUTPUT_HEIGHT; char_row++)
+        {
+            for (int char_col = 0; char_col < OCR_OUTPUT_WIDTH; char_col++)
+            {
+                // Extract 8x8 bitmap for this character position
+                extract_char_bitmap(vram, char_col, char_row, bitmap);
+
+                // Recognize character from bitmap
+                ula_matrix.ocr_matrix[char_row][char_col] = recognize_character(bitmap);
+
+                // Get attribute color for this character
+                ula_matrix.ocr_colors[char_row][char_col] = get_attribute(vram, char_col * 8, char_row * 8);
+            }
+            // Null-terminate each row for string operations
+            ula_matrix.ocr_matrix[char_row][OCR_OUTPUT_WIDTH] = '\0';
+        }
+    }
     else
     {
-        // Block mode: 2x2 pixels per character
+        // Block mode (default): 2x2 pixels per character
         for (int y = 0; y < OUTPUT_HEIGHT; y++)
         {
             for (int x = 0; x < OUTPUT_WIDTH; x++)
@@ -316,8 +530,23 @@ void ula_render_to_terminal(void)
     get_terminal_size(&term_width, &term_height);
 
     // Calculate content dimensions based on render mode
-    int content_height = (ula_matrix.render_mode == ULA_RENDER_BRAILLE2X4) ? BRAILLE_OUTPUT_HEIGHT : OUTPUT_HEIGHT;
-    int content_width = (ula_matrix.render_mode == ULA_RENDER_BRAILLE2X4) ? BRAILLE_OUTPUT_WIDTH : OUTPUT_WIDTH;
+    int content_height;
+    int content_width;
+    if (ula_matrix.render_mode == ULA_RENDER_BRAILLE2X4)
+    {
+        content_height = BRAILLE_OUTPUT_HEIGHT;
+        content_width = BRAILLE_OUTPUT_WIDTH;
+    }
+    else if (ula_matrix.render_mode == ULA_RENDER_OCR)
+    {
+        content_height = OCR_OUTPUT_HEIGHT;
+        content_width = OCR_OUTPUT_WIDTH;
+    }
+    else
+    {
+        content_height = OUTPUT_HEIGHT;
+        content_width = OUTPUT_WIDTH;
+    }
 
     // Calculate border and padding sizes for centering
     // Clamp padding to 0 if content is wider than terminal
@@ -412,6 +641,65 @@ void ula_render_to_terminal(void)
                 for (int i = 0; i < 3 && ch[i] && buffer_pos < 65520; i++)
                 {
                     render_buffer[buffer_pos++] = ch[i];
+                }
+            }
+            // Right padding with border color
+            if (right_padding > 0)
+            {
+                buffer_pos += sprintf(render_buffer + buffer_pos, "\033[%dm", border_bg_code);
+                for (int p = 0; p < right_padding && buffer_pos < 65520; p++)
+                    render_buffer[buffer_pos++] = ' ';
+            }
+            // Reset colors before newline
+            if (buffer_pos < 65530)
+                buffer_pos += sprintf(render_buffer + buffer_pos, "\033[0m");
+            if (buffer_pos < 65534)
+                render_buffer[buffer_pos++] = '\n';
+        }
+    }
+    else if (ula_matrix.render_mode == ULA_RENDER_OCR)
+    {
+        // OCR mode rendering - text-based output with colors
+        color_attr_t current_attr = {0, 0, 0}; // Track last color to minimize escape codes
+        for (int y = 0; y < OCR_OUTPUT_HEIGHT; y++)
+        {
+            // Left padding with border color
+            if (left_padding > 0)
+            {
+                buffer_pos += sprintf(render_buffer + buffer_pos, "\033[%dm", border_bg_code);
+                for (int p = 0; p < left_padding && buffer_pos < 65520; p++)
+                    render_buffer[buffer_pos++] = ' ';
+            }
+
+            current_attr.ink = 0xFF; // Force initial color code
+            for (int x = 0; x < OCR_OUTPUT_WIDTH; x++)
+            {
+                color_attr_t attr = ula_matrix.ocr_colors[y][x];
+
+                // Emit color code only if color changed
+                if (attr.ink != current_attr.ink || attr.paper != current_attr.paper || attr.bright != current_attr.bright)
+                {
+                    current_attr = attr;
+                    // Convert Spectrum colors to ANSI colors
+                    int ansi_ink = spectrum_to_ansi[attr.ink & 7];
+                    int ansi_paper = spectrum_to_ansi[attr.paper & 7];
+
+                    // Apply foreground color: 30-37 for normal, 90-97 for bright
+                    int fg_code = 30 + ansi_ink;
+                    if (attr.bright)
+                        fg_code += 60; // Convert to bright colors (90-97)
+
+                    // Apply background color: 40-47
+                    int bg_code = 40 + ansi_paper;
+
+                    buffer_pos += sprintf(render_buffer + buffer_pos, "\033[%d;%dm", fg_code, bg_code);
+                }
+
+                // Render recognized character
+                char ch = ula_matrix.ocr_matrix[y][x];
+                if (ch && buffer_pos < 65520)
+                {
+                    render_buffer[buffer_pos++] = ch;
                 }
             }
             // Right padding with border color
@@ -551,6 +839,9 @@ void ula_render_to_terminal(void)
  */
 void ula_term_init(void)
 {
+    // Register emergency cleanup handler to ensure terminal is restored even on crash
+    atexit(ula_emergency_cleanup);
+
     // Save original terminal settings and set to raw mode
     if (tcgetattr(STDIN_FILENO, &orig_termios) == 0)
     {
@@ -598,6 +889,11 @@ void ula_term_cleanup(void)
     {
         tcsetattr(STDIN_FILENO, TCSANOW, &orig_termios);
         termios_saved = 0;
+    }
+    else
+    {
+        // Fallback: try to restore anyway
+        tcsetattr(STDIN_FILENO, TCSANOW, &orig_termios);
     }
 }
 

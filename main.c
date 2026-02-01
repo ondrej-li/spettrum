@@ -281,12 +281,12 @@ static void print_help(const char *program_name)
     printf("  -v, --version             Show version information\n");
     printf("  -r, --rom FILE            Load ROM from file\n");
     printf("  -s, --snapshot FILE       Load Z80 snapshot file (restores CPU and memory state)\n");
-    printf("  -t, --tap FILE            Load TAP tape image file\n");
-    printf("  -a, --tape-authentic      Use ROM loader for tape (port 0xFE simulation)\n");
+    printf("  -t, --tap FILE            Load TAP tape image file (uses ROM loader by default)\n");
+    printf("  -q, --quick-load          Quick-load TAP directly to memory (bypass ROM loader)\n");
     printf("  -d, --disk FILE           Load disk image from file\n");
     printf("  -i, --instructions NUM    Number of instructions to execute (0=unlimited, default=0)\n");
     printf("  -D, --disassemble FILE    Write disassembly to FILE\n");
-    printf("  -m, --render-mode MODE    Rendering mode: block (2x2) or braille (2x4, default)\n");
+    printf("  -m, --render-mode MODE    Rendering mode: block (2x2), braille (2x4, default), or ocr (32x24)\n");
     printf("  -k, --simulate-key STRING Simulate key presses (auto-replay starting at 3s, spaced 500ms)\n");
     printf("\n");
 }
@@ -327,21 +327,81 @@ static void emulator_write_memory(void *user_data, uint16_t addr, uint8_t value)
  */
 static uint8_t keyboard_read_handler(void *user_data, uint16_t port)
 {
+    static uint64_t total_calls = 0;
+    static uint64_t port_0xfe_calls = 0;
+    static uint64_t tape_player_calls = 0;
+    static FILE *port_log = NULL;
+
+    total_calls++;
+
+    // Open debug log on first call
+    if (!port_log)
+    {
+        port_log = fopen("tap_port.log", "w");
+        if (port_log)
+        {
+            fprintf(port_log, "=== Port Read Handler Debug ===\n\n");
+            fflush(port_log);
+        }
+    }
+
     z80_callback_context_t *ctx = (z80_callback_context_t *)user_data;
     uint8_t result = keyboard_read_port(port);
 
-    // If tape player is active and reading from port 0xFE (FD), inject EAR bit
+    // Log first 50 calls regardless of port
+    if (port_log && total_calls <= 50)
+    {
+        fprintf(port_log, "Call #%llu: port=0x%04X, ctx=%p", total_calls, port, (void *)ctx);
+        if (ctx)
+        {
+            fprintf(port_log, ", io_data=%p", ctx->io_data);
+            if (ctx->io_data)
+            {
+                spettrum_emulator_t *emulator = (spettrum_emulator_t *)ctx->io_data;
+                fprintf(port_log, ", tape_player=%p", (void *)emulator->tape_player);
+            }
+        }
+        fprintf(port_log, "\n");
+        fflush(port_log);
+    }
+
+    // Check if this is a port 0xFE read
+    if ((port & 0xFF) == 0xFE)
+    {
+        port_0xfe_calls++;
+        if (port_log && port_0xfe_calls <= 20)
+        {
+            fprintf(port_log, "  Port 0xFE read #%llu (total call #%llu)\n", port_0xfe_calls, total_calls);
+            fflush(port_log);
+        }
+    }
+
+    // If tape player is active and reading from port 0xFE, inject EAR bit
     if (ctx && ctx->io_data)
     {
         spettrum_emulator_t *emulator = (spettrum_emulator_t *)ctx->io_data;
         if (emulator && emulator->tape_player && (port & 0xFF) == 0xFE)
         {
+            tape_player_calls++;
+
+            if (port_log && tape_player_calls <= 20)
+            {
+                fprintf(port_log, "  TAPE: Reading tape at cycle %llu\n", emulator->cpu->cyc);
+                fflush(port_log);
+            }
+
             // Bit 6 is EAR input - overwrite with tape data
             uint8_t ear_bit = tape_player_read_ear(emulator->tape_player, emulator->cpu->cyc);
             if (ear_bit)
                 result |= 0x40; // Set bit 6
             else
                 result &= ~0x40; // Clear bit 6
+
+            if (port_log && tape_player_calls <= 20)
+            {
+                fprintf(port_log, "  TAPE: ear_bit=%u, result=0x%02X\n", ear_bit, result);
+                fflush(port_log);
+            }
         }
     }
 
@@ -812,7 +872,7 @@ int main(int argc, char *argv[])
     const char *disk_file = NULL;
     const char *disasm_file = NULL;
     const char *simulated_keys = NULL;                     // Simulated key string for testing
-    int use_authentic_tape_loading = 0;                    // Use ROM loader instead of quick-load
+    int use_authentic_tape_loading = 1;                    // Default: use ROM loader (authentic)
     uint64_t instructions_to_run = 0;                      // Default: unlimited
     ula_render_mode_t render_mode = ULA_RENDER_BRAILLE2X4; // Default: braille
 
@@ -823,7 +883,7 @@ int main(int argc, char *argv[])
         {"rom", required_argument, 0, 'r'},
         {"snapshot", required_argument, 0, 's'},
         {"tap", required_argument, 0, 't'},
-        {"tape-authentic", no_argument, 0, 'a'},
+        {"quick-load", no_argument, 0, 'q'},
         {"disk", required_argument, 0, 'd'},
         {"instructions", required_argument, 0, 'i'},
         {"disassemble", required_argument, 0, 'D'},
@@ -834,7 +894,7 @@ int main(int argc, char *argv[])
     // Parse command-line arguments
     int option_index = 0;
     int c;
-    while ((c = getopt_long(argc, argv, "hvr:s:t:ad:i:D:m:k:", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "hvr:s:t:qd:i:D:m:k:", long_options, &option_index)) != -1)
     {
         switch (c)
         {
@@ -853,8 +913,8 @@ int main(int argc, char *argv[])
         case 't':
             tap_file = optarg;
             break;
-        case 'a':
-            use_authentic_tape_loading = 1;
+        case 'q':
+            use_authentic_tape_loading = 0; // Disable authentic loading (use quick-load)
             break;
         case 'd':
             disk_file = optarg;
@@ -874,9 +934,13 @@ int main(int argc, char *argv[])
             {
                 render_mode = ULA_RENDER_BRAILLE2X4;
             }
+            else if (strcmp(optarg, "ocr") == 0 || strcmp(optarg, "text") == 0)
+            {
+                render_mode = ULA_RENDER_OCR;
+            }
             else
             {
-                fprintf(stderr, "Error: Invalid render mode '%s'. Use 'block' or 'braille'\n", optarg);
+                fprintf(stderr, "Error: Invalid render mode '%s'. Use 'block', 'braille', or 'ocr'\n", optarg);
                 return EXIT_FAILURE;
             }
             break;
@@ -988,7 +1052,19 @@ int main(int argc, char *argv[])
                 return EXIT_FAILURE;
             }
             emulator->use_authentic_loading = 1;
-            printf("Tape loaded for authentic ROM-based loading. Use LOAD \"\" in BASIC.\n");
+            printf("\n");
+            printf("╔════════════════════════════════════════════════════════════════╗\n");
+            printf("║  TAP TAPE LOADED - Authentic ROM Loading Mode                 ║\n");
+            printf("╠════════════════════════════════════════════════════════════════╣\n");
+            printf("║  The emulator will now boot the Spectrum ROM.                 ║\n");
+            printf("║  Wait for the 'K' cursor to appear, then type:                ║\n");
+            printf("║                                                                ║\n");
+            printf("║      LOAD \"\"                                                   ║\n");
+            printf("║                                                                ║\n");
+            printf("║  and press ENTER to start loading from tape.                  ║\n");
+            printf("║  Debug logs: tap.log and tap_port.log                         ║\n");
+            printf("╚════════════════════════════════════════════════════════════════╝\n");
+            printf("\n");
         }
         else
         {

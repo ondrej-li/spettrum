@@ -86,6 +86,10 @@ typedef struct
     uint64_t cycle_count;     // Z80 cycles until next edge
     uint64_t last_edge_cycle; // Cycle count of last edge
 
+    // Data bit encoding state (each bit = 2 pulses)
+    uint8_t data_pulse_phase;  // 0 = first pulse of bit, 1 = second pulse
+    uint8_t current_bit_value; // Current bit value (0 or 1) for second pulse
+
     // Timings (T-states)
     uint16_t pilot_length; // Pilot pulse length (2168)
     uint16_t pilot_count;  // Number of pilot pulses (8063 or 3223)
@@ -93,6 +97,10 @@ typedef struct
     uint16_t sync2_length; // Second sync pulse (735)
     uint16_t zero_length;  // Zero bit pulse length (855)
     uint16_t one_length;   // One bit pulse length (1710)
+
+    // Debug logging
+    FILE *debug_log;     // Debug log file handle
+    uint64_t read_count; // Number of times tape_player_read_ear was called
 } tape_player_t;
 
 /**
