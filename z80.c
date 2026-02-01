@@ -78,13 +78,8 @@ static uint8_t z80_read_io_internal(z80_emulator_t *z80, uint16_t port)
     // Check for port-specific callback first
     if (z80->port_callbacks[port_low].read_fn)
     {
-        void *io_data = z80->user_data;
-        if (z80->user_data)
-        {
-            z80_callback_context_t *ctx = (z80_callback_context_t *)z80->user_data;
-            io_data = ctx->io_data;
-        }
-        return z80->port_callbacks[port_low].read_fn(io_data, port);
+        // Pass the full user_data context, not just io_data
+        return z80->port_callbacks[port_low].read_fn(z80->user_data, port);
     }
 
     // Fall back to generic I/O callback
@@ -112,13 +107,8 @@ static void z80_write_io_internal(z80_emulator_t *z80, uint16_t port, uint8_t va
     // Check for port-specific callback first
     if (z80->port_callbacks[port_low].write_fn)
     {
-        void *io_data = z80->user_data;
-        if (z80->user_data)
-        {
-            z80_callback_context_t *ctx = (z80_callback_context_t *)z80->user_data;
-            io_data = ctx->io_data;
-        }
-        z80->port_callbacks[port_low].write_fn(io_data, port, value);
+        // Pass the full user_data context, not just io_data
+        z80->port_callbacks[port_low].write_fn(z80->user_data, port, value);
         return;
     }
 

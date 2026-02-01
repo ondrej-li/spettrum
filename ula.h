@@ -15,10 +15,11 @@
 // Rendering modes
 typedef enum
 {
-    ULA_RENDER_BLOCK2X2 = 0,  // 2x2 block characters (128x96 output)
-    ULA_RENDER_BRAILLE2X4 = 1 // 2x4 braille characters (128x48 output)
-                              // Note: Braille mode has visual gaps between character rows
-                              // due to inherent braille character design (tactile, not graphic)
+    ULA_RENDER_BLOCK2X2 = 0,   // 2x2 block characters (128x96 output)
+    ULA_RENDER_BRAILLE2X4 = 1, // 2x4 braille characters (128x48 output)
+                               // Note: Braille mode has visual gaps between character rows
+                               // due to inherent braille character design (tactile, not graphic)
+    ULA_RENDER_OCR = 2         // OCR mode: 32x24 character matrix with text recognition
 } ula_render_mode_t;
 
 // Output matrix dimensions (2x2 pixels -> 1 character)
@@ -28,6 +29,10 @@ typedef enum
 // Braille output dimensions (2x4 pixels -> 1 character)
 #define BRAILLE_OUTPUT_WIDTH (SPECTRUM_WIDTH / 2)
 #define BRAILLE_OUTPUT_HEIGHT (SPECTRUM_HEIGHT / 4)
+
+// OCR output dimensions (8x8 character blocks -> 1 character position)
+#define OCR_OUTPUT_WIDTH 32
+#define OCR_OUTPUT_HEIGHT 24
 
 // ULA display structure
 typedef struct

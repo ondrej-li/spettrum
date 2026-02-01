@@ -240,9 +240,23 @@ tape_player_t *tape_player_init(const char *filename)
     }
 
     // Open TAP file
+    // Open debug log file
+    player->debug_log = fopen("tap.log", "w");
+    if (player->debug_log)
+    {
+        fprintf(player->debug_log, "=== TAP Debug Log ===\n");
+        fprintf(player->debug_log, "TAP file: %s\n\n", filename);
+        fflush(player->debug_log);
+    }
+
     player->tap_file = tap_open(filename);
     if (!player->tap_file)
     {
+        if (player->debug_log)
+        {
+            fprintf(player->debug_log, "ERROR: Failed to open TAP file\n");
+            fclose(player->debug_log);
+        }
         free(player);
         return NULL;
     }
@@ -260,6 +274,16 @@ tape_player_t *tape_player_init(const char *filename)
     player->ear_level = 0; // Start low
     player->cycle_count = 0;
     player->last_edge_cycle = 0;
+    player->data_pulse_phase = 0; // Track which of the two pulses we're on for data bits
+    player->read_count = 0;
+
+    if (player->debug_log)
+    {
+        fprintf(player->debug_log, "Initialized tape player:\n");
+        fprintf(player->debug_log, "  State: IDLE\n");
+        fprintf(player->debug_log, "  EAR level: %d\n\n", player->ear_level);
+        fflush(player->debug_log);
+    }
 
     // Set standard Spectrum ROM timings (T-states at 3.5 MHz)
     player->pilot_length = 2168; // Pilot pulse length
@@ -286,6 +310,19 @@ tape_player_t *tape_player_init(const char *filename)
 
         printf("Tape loaded: Starting playback from block %u (%u bytes)\n",
                player->current_block, player->block_len);
+
+        if (player->debug_log)
+        {
+            fprintf(player->debug_log, "First block loaded:\n");
+            fprintf(player->debug_log, "  Block: %u\n", player->current_block);
+            fprintf(player->debug_log, "  Length: %u bytes\n", player->block_len);
+            fprintf(player->debug_log, "  Flag byte: 0x%02X\n", player->block_data[0]);
+            fprintf(player->debug_log, "  Type: %s\n", player->block_data[0] == 0x00 ? "HEADER" : "DATA");
+            fprintf(player->debug_log, "  State: PILOT\n");
+            fprintf(player->debug_log, "  Pilot pulses: %u\n", player->pulse_count);
+            fprintf(player->debug_log, "  Pulse length: %u T-states\n\n", player->pulse_length);
+            fflush(player->debug_log);
+        }
     }
     else
     {
@@ -305,6 +342,13 @@ void tape_player_close(tape_player_t *player)
 {
     if (!player)
         return;
+
+    if (player->debug_log)
+    {
+        fprintf(player->debug_log, "\n=== Tape Player Closed ===\n");
+        fprintf(player->debug_log, "Total read_ear calls: %llu\n", player->read_count);
+        fclose(player->debug_log);
+    }
 
     if (player->tap_file)
         tap_close(player->tap_file);
@@ -345,90 +389,165 @@ uint8_t tape_player_read_ear(tape_player_t *player, uint64_t current_cycle)
     if (!player || player->state == TAPE_STATE_IDLE || player->state == TAPE_STATE_END)
         return 0; // Tape not loaded or finished
 
-    // Check if time for next pulse edge
-    if (current_cycle >= player->last_edge_cycle + player->cycle_count)
+    player->read_count++;
+
+    // Log first few calls and periodic updates
+    if (player->debug_log && (player->read_count <= 10 || player->read_count % 10000 == 0))
     {
-        // Toggle ear level and advance to next pulse
-        player->ear_level = !player->ear_level;
+        fprintf(player->debug_log, "read_ear call #%llu: cycle=%llu state=%d ear=%d\n",
+                player->read_count, current_cycle, player->state, player->ear_level);
+        fflush(player->debug_log);
+    }
+
+    // Initialize timing on first call
+    if (player->last_edge_cycle == 0 && player->cycle_count == 0)
+    {
         player->last_edge_cycle = current_cycle;
+        player->cycle_count = player->pulse_length;
 
-        // Determine next pulse timing based on state
-        switch (player->state)
+        if (player->debug_log)
         {
-        case TAPE_STATE_PILOT:
-            player->cycle_count = player->pilot_length;
-            player->pulse_count--;
+            fprintf(player->debug_log, "  First call - initialized: last_edge=%llu cycle_count=%llu\n",
+                    player->last_edge_cycle, player->cycle_count);
+            fflush(player->debug_log);
+        }
+    }
 
-            if (player->pulse_count == 0)
-            {
-                // Pilot phase done, move to sync
-                player->state = TAPE_STATE_SYNC;
-                player->pulse_count = 2; // Two sync pulses
-                player->ear_level = 0;   // Ensure we start low for sync
-            }
-            break;
+    // Handle PILOT state - toggle at each edge
+    if (player->state == TAPE_STATE_PILOT && current_cycle >= player->last_edge_cycle + player->cycle_count)
+    {
+        // Toggle EAR at edge
+        player->ear_level = !player->ear_level;
+        player->last_edge_cycle += player->cycle_count;
+        player->pulse_count--;
 
-        case TAPE_STATE_SYNC:
-            if (player->pulse_count == 2)
-            {
-                player->cycle_count = player->sync1_length;
-                player->pulse_count--;
-            }
-            else if (player->pulse_count == 1)
-            {
-                player->cycle_count = player->sync2_length;
-                player->pulse_count--;
-            }
-            else
-            {
-                // Sync done, move to data
-                player->state = TAPE_STATE_DATA;
-                player->block_bit_pos = 0;
-                player->ear_level = 0; // Start low
-            }
-            break;
-
-        case TAPE_STATE_DATA:
+        if (player->debug_log && (player->read_count <= 20 || player->pulse_count % 1000 == 0))
         {
-            // Each data bit is encoded as two pulses of same length
-            // Bit 0: two pulses of 855 T-states each
-            // Bit 1: two pulses of 1710 T-states each
+            fprintf(player->debug_log, "  PILOT edge: %u pulses remaining\n", player->pulse_count);
+            fflush(player->debug_log);
+        }
 
-            uint8_t data_bit = tape_get_next_bit(player);
-            uint16_t bit_length = (data_bit == 0) ? player->zero_length : player->one_length;
-            player->cycle_count = bit_length;
+        // Check if pilot phase is done
+        if (player->pulse_count == 0)
+        {
+            player->state = TAPE_STATE_SYNC;
+            player->pulse_count = 2;
+            player->ear_level = 0;
+            player->cycle_count = player->sync1_length;
 
-            if (player->block_bit_pos > player->block_len * 8)
+            if (player->debug_log)
             {
-                // Block complete, try to load next block
-                if (tap_read_block(player->tap_file, &player->block_data, &player->block_len) == 0)
+                fprintf(player->debug_log, "  PILOT -> SYNC transition\n");
+                fflush(player->debug_log);
+            }
+        }
+    }
+
+    // Handle SYNC state (2 sync pulses before data)
+    if (player->state == TAPE_STATE_SYNC && current_cycle >= player->last_edge_cycle + player->cycle_count)
+    {
+        player->ear_level = !player->ear_level;
+        player->last_edge_cycle += player->cycle_count;
+        player->pulse_count--;
+
+        if (player->pulse_count == 1)
+        {
+            player->cycle_count = player->sync2_length;
+        }
+        else if (player->pulse_count == 0)
+        {
+            // Sync done, transition to DATA
+            player->state = TAPE_STATE_DATA;
+            player->block_bit_pos = 0;
+            player->data_pulse_phase = 0;
+            player->ear_level = 0;
+
+            // Read first bit to set cycle_count
+            if (player->block_bit_pos < player->block_len * 8)
+            {
+                uint8_t data_bit = tape_get_next_bit(player);
+                uint16_t bit_length = (data_bit == 0) ? player->zero_length : player->one_length;
+                player->cycle_count = bit_length;
+                player->current_bit_value = data_bit;
+                player->data_pulse_phase = 1;
+            }
+
+            if (player->debug_log)
+            {
+                fprintf(player->debug_log, "  SYNC -> DATA transition at cycle %llu\n", current_cycle);
+                fprintf(player->debug_log, "  Starting data playback (%u bytes = %u bits)\n",
+                        player->block_len, player->block_len * 8);
+                fflush(player->debug_log);
+            }
+        }
+    }
+
+    // Handle DATA state - each bit encoded as 2 pulses
+    if (player->state == TAPE_STATE_DATA && current_cycle >= player->last_edge_cycle + player->cycle_count)
+    {
+        // Toggle EAR at edge
+        player->ear_level = !player->ear_level;
+        player->last_edge_cycle += player->cycle_count;
+
+        // Check if we need to fetch next bit
+        if (player->data_pulse_phase == 0)
+        {
+            // Check if block complete
+            if (player->block_bit_pos >= player->block_len * 8)
+            {
+                // Load next block
+                if (tap_read_block(player->tap_file, &player->block_data, &player->block_len) == 0 &&
+                    player->block_data != NULL && player->block_len > 0)
                 {
                     player->current_block++;
                     player->state = TAPE_STATE_PILOT;
-                    player->pulse_count = player->pilot_count;
+                    player->pulse_count = (player->block_data[0] == 0xFF) ? 3223 : player->pilot_count;
                     player->pulse_length = player->pilot_length;
+                    player->cycle_count = player->pilot_length;
                     player->block_bit_pos = 0;
+                    player->data_pulse_phase = 0;
 
-                    // Check if data block (shorter pilot)
-                    if (player->block_data && player->block_data[0] == 0xFF)
-                        player->pulse_count = 3223;
-
-                    fprintf(stderr, "Loading block %u...\n", player->current_block);
+                    if (player->debug_log)
+                    {
+                        fprintf(player->debug_log, "  Block %u loaded: %u bytes, flag=0x%02X\n",
+                                player->current_block, player->block_len, player->block_data[0]);
+                        fflush(player->debug_log);
+                    }
                 }
                 else
                 {
-                    // No more blocks
                     player->state = TAPE_STATE_END;
-                    fprintf(stderr, "Tape playback complete\n");
+                    player->cycle_count = 1;
+                    if (player->debug_log)
+                    {
+                        fprintf(player->debug_log, "  Tape complete\n");
+                        fflush(player->debug_log);
+                    }
+                    return player->ear_level;
                 }
             }
-            break;
-        }
+            else
+            {
+                // First pulse of new bit
+                uint8_t data_bit = tape_get_next_bit(player);
+                uint16_t bit_length = (data_bit == 0) ? player->zero_length : player->one_length;
+                player->cycle_count = bit_length;
+                player->current_bit_value = data_bit;
+                player->data_pulse_phase = 1;
 
-        case TAPE_STATE_IDLE:
-        case TAPE_STATE_END:
-            // Do nothing
-            break;
+                if (player->debug_log && (player->block_bit_pos <= 20 || player->block_bit_pos % 1000 == 0))
+                {
+                    fprintf(player->debug_log, "  DATA bit %u: %u\n", player->block_bit_pos - 1, data_bit);
+                    fflush(player->debug_log);
+                }
+            }
+        }
+        else
+        {
+            // Second pulse of same bit
+            uint16_t bit_length = (player->current_bit_value == 0) ? player->zero_length : player->one_length;
+            player->cycle_count = bit_length;
+            player->data_pulse_phase = 0;
         }
     }
 
