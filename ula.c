@@ -56,6 +56,7 @@ typedef struct
     uint8_t ink;    // Foreground color (0-7)
     uint8_t paper;  // Background color (0-7)
     uint8_t bright; // Brightness (0 or 1)
+    uint8_t blink;  // Blink/flash flag (0 or 1)
 } color_attr_t;
 
 // Output matrix dimensions (2x2 pixels -> 1 character)
@@ -195,12 +196,14 @@ typedef struct
     color_attr_t ocr_colors[OCR_OUTPUT_HEIGHT][OCR_OUTPUT_WIDTH];
     ula_render_mode_t render_mode;
     uint8_t border_color;
+    uint32_t frame_counter; // Frame counter for blink timing (0-31, cycles every 32 frames)
     pthread_mutex_t lock;
 } ula_matrix_t;
 
 static ula_matrix_t ula_matrix = {
     .render_mode = ULA_RENDER_BRAILLE2X4,
     .border_color = 0,
+    .frame_counter = 0,
     .lock = PTHREAD_MUTEX_INITIALIZER};
 
 /**
@@ -211,7 +214,7 @@ static ula_matrix_t ula_matrix = {
  */
 static color_attr_t get_attribute(const uint8_t *vram, int x, int y)
 {
-    color_attr_t attr = {0, 7, 0}; // Default: black on white, not bright
+    color_attr_t attr = {0, 7, 0, 0}; // Default: black on white, not bright, not blinking
 
     // Character position in 32x24 grid
     int char_col = (x / 8) % SPECTRUM_ATTR_COLS;
@@ -228,6 +231,7 @@ static color_attr_t get_attribute(const uint8_t *vram, int x, int y)
     attr.ink = attr_byte & ATTR_INK_MASK;
     attr.paper = (attr_byte & ATTR_PAPER_MASK) >> 3;
     attr.bright = (attr_byte & ATTR_BRIGHT_MASK) >> 6;
+    attr.blink = (attr_byte & ATTR_BLINK_MASK) >> 7;
 
     return attr;
 }
@@ -549,10 +553,20 @@ void ula_render_to_terminal(void)
         content_width = OUTPUT_WIDTH;
     }
 
-    // Calculate border and padding sizes for centering
-    // Clamp padding to 0 if content is wider than terminal
-    int left_padding = (term_width > content_width) ? (term_width - content_width) / 2 : 0;
-    int right_padding = (term_width > content_width) ? term_width - content_width - left_padding : 0;
+    // Calculate border and padding sizes
+    // For OCR mode, use fixed 10-character borders; for others, center
+    int left_padding, right_padding;
+    if (ula_matrix.render_mode == ULA_RENDER_OCR)
+    {
+        left_padding = 10;
+        right_padding = 10;
+    }
+    else
+    {
+        // Center other modes
+        left_padding = (term_width > content_width) ? (term_width - content_width) / 2 : 0;
+        right_padding = (term_width > content_width) ? term_width - content_width - left_padding : 0;
+    }
     // Always try to render at least 1 line of border top/bottom if there's room
     int border_height = (term_height > content_height + 2) ? 1 : 0;
 
@@ -561,6 +575,12 @@ void ula_render_to_terminal(void)
 
     // Lock matrix for reading
     pthread_mutex_lock(&ula_matrix.lock);
+
+    // Increment frame counter for blink timing (cycles 0-31)
+    ula_matrix.frame_counter = (ula_matrix.frame_counter + 1) % 32;
+
+    // Calculate blink phase: 0 = normal (frames 0-15), 1 = inverted (frames 16-31)
+    int blink_phase = (ula_matrix.frame_counter / 16) % 2;
 
     // Build entire frame in buffer (avoids multiple printf calls)
     int buffer_pos = 0;
@@ -589,9 +609,15 @@ void ula_render_to_terminal(void)
     {
         for (int b = 0; b < border_height; b++)
         {
-            // Top border with border color (full width)
             buffer_pos += sprintf(render_buffer + buffer_pos, "\033[%dm", border_bg_code);
-            for (int i = 0; i < term_width && buffer_pos < 65520; i++)
+            // Left padding
+            for (int i = 0; i < left_padding && buffer_pos < 65520; i++)
+                render_buffer[buffer_pos++] = ' ';
+            // Content width
+            for (int i = 0; i < content_width && buffer_pos < 65520; i++)
+                render_buffer[buffer_pos++] = ' ';
+            // Right padding
+            for (int i = 0; i < right_padding && buffer_pos < 65520; i++)
                 render_buffer[buffer_pos++] = ' ';
             // Reset and newline
             buffer_pos += sprintf(render_buffer + buffer_pos, "\033[0m\n");
@@ -602,7 +628,7 @@ void ula_render_to_terminal(void)
     if (ula_matrix.render_mode == ULA_RENDER_BRAILLE2X4)
     {
         // Braille mode rendering with colors and border
-        color_attr_t current_attr = {0, 0, 0}; // Track last color to minimize escape codes
+        color_attr_t current_attr = {0, 0, 0, 0}; // Track last color to minimize escape codes
         for (int y = 0; y < BRAILLE_OUTPUT_HEIGHT; y++)
         {
             // Left padding with border color
@@ -618,13 +644,24 @@ void ula_render_to_terminal(void)
             {
                 color_attr_t attr = ula_matrix.braille_colors[y][x];
 
-                // Emit color code only if color changed
-                if (attr.ink != current_attr.ink || attr.paper != current_attr.paper || attr.bright != current_attr.bright)
+                // Apply blink: swap ink/paper when blink is set and we're in inverted phase
+                uint8_t display_ink = attr.ink;
+                uint8_t display_paper = attr.paper;
+                if (attr.blink && blink_phase == 1)
                 {
-                    current_attr = attr;
+                    display_ink = attr.paper;
+                    display_paper = attr.ink;
+                }
+
+                // Emit color code only if color changed
+                if (display_ink != current_attr.ink || display_paper != current_attr.paper || attr.bright != current_attr.bright)
+                {
+                    current_attr.ink = display_ink;
+                    current_attr.paper = display_paper;
+                    current_attr.bright = attr.bright;
                     // Convert Spectrum colors to ANSI colors
-                    int ansi_ink = spectrum_to_ansi[attr.ink & 7];
-                    int ansi_paper = spectrum_to_ansi[attr.paper & 7];
+                    int ansi_ink = spectrum_to_ansi[display_ink & 7];
+                    int ansi_paper = spectrum_to_ansi[display_paper & 7];
 
                     // Apply foreground color: 30-37 for normal, 90-97 for bright
                     int fg_code = 30 + ansi_ink;
@@ -661,7 +698,7 @@ void ula_render_to_terminal(void)
     else if (ula_matrix.render_mode == ULA_RENDER_OCR)
     {
         // OCR mode rendering - text-based output with colors
-        color_attr_t current_attr = {0, 0, 0}; // Track last color to minimize escape codes
+        color_attr_t current_attr = {0, 0, 0, 0}; // Track last color to minimize escape codes
         for (int y = 0; y < OCR_OUTPUT_HEIGHT; y++)
         {
             // Left padding with border color
@@ -677,13 +714,24 @@ void ula_render_to_terminal(void)
             {
                 color_attr_t attr = ula_matrix.ocr_colors[y][x];
 
-                // Emit color code only if color changed
-                if (attr.ink != current_attr.ink || attr.paper != current_attr.paper || attr.bright != current_attr.bright)
+                // Apply blink: swap ink/paper when blink is set and we're in inverted phase
+                uint8_t display_ink = attr.ink;
+                uint8_t display_paper = attr.paper;
+                if (attr.blink && blink_phase == 1)
                 {
-                    current_attr = attr;
+                    display_ink = attr.paper;
+                    display_paper = attr.ink;
+                }
+
+                // Emit color code only if color changed
+                if (display_ink != current_attr.ink || display_paper != current_attr.paper || attr.bright != current_attr.bright)
+                {
+                    current_attr.ink = display_ink;
+                    current_attr.paper = display_paper;
+                    current_attr.bright = attr.bright;
                     // Convert Spectrum colors to ANSI colors
-                    int ansi_ink = spectrum_to_ansi[attr.ink & 7];
-                    int ansi_paper = spectrum_to_ansi[attr.paper & 7];
+                    int ansi_ink = spectrum_to_ansi[display_ink & 7];
+                    int ansi_paper = spectrum_to_ansi[display_paper & 7];
 
                     // Apply foreground color: 30-37 for normal, 90-97 for bright
                     int fg_code = 30 + ansi_ink;
@@ -740,7 +788,7 @@ void ula_render_to_terminal(void)
     else
     {
         // Block mode rendering with colors and border
-        color_attr_t current_attr = {0, 0, 0}; // Track last color to minimize escape codes
+        color_attr_t current_attr = {0, 0, 0, 0}; // Track last color to minimize escape codes
         for (int y = 0; y < OUTPUT_HEIGHT; y++)
         {
             // Left padding with border color
@@ -756,13 +804,24 @@ void ula_render_to_terminal(void)
             {
                 color_attr_t attr = ula_matrix.matrix_colors[y][x];
 
-                // Emit color code only if color changed
-                if (attr.ink != current_attr.ink || attr.paper != current_attr.paper || attr.bright != current_attr.bright)
+                // Apply blink: swap ink/paper when blink is set and we're in inverted phase
+                uint8_t display_ink = attr.ink;
+                uint8_t display_paper = attr.paper;
+                if (attr.blink && blink_phase == 1)
                 {
-                    current_attr = attr;
+                    display_ink = attr.paper;
+                    display_paper = attr.ink;
+                }
+
+                // Emit color code only if color changed
+                if (display_ink != current_attr.ink || display_paper != current_attr.paper || attr.bright != current_attr.bright)
+                {
+                    current_attr.ink = display_ink;
+                    current_attr.paper = display_paper;
+                    current_attr.bright = attr.bright;
                     // Convert Spectrum colors to ANSI colors
-                    int ansi_ink = spectrum_to_ansi[attr.ink & 7];
-                    int ansi_paper = spectrum_to_ansi[attr.paper & 7];
+                    int ansi_ink = spectrum_to_ansi[display_ink & 7];
+                    int ansi_paper = spectrum_to_ansi[display_paper & 7];
 
                     // Apply foreground color: 30-37 for normal, 90-97 for bright
                     int fg_code = 30 + ansi_ink;
@@ -802,9 +861,15 @@ void ula_render_to_terminal(void)
     {
         for (int b = 0; b < border_height; b++)
         {
-            // Bottom border with border color (full width)
             buffer_pos += sprintf(render_buffer + buffer_pos, "\033[%dm", border_bg_code);
-            for (int i = 0; i < term_width && buffer_pos < 65520; i++)
+            // Left padding
+            for (int i = 0; i < left_padding && buffer_pos < 65520; i++)
+                render_buffer[buffer_pos++] = ' ';
+            // Content width
+            for (int i = 0; i < content_width && buffer_pos < 65520; i++)
+                render_buffer[buffer_pos++] = ' ';
+            // Right padding
+            for (int i = 0; i < right_padding && buffer_pos < 65520; i++)
                 render_buffer[buffer_pos++] = ' ';
             // Reset and newline
             buffer_pos += sprintf(render_buffer + buffer_pos, "\033[0m\n");

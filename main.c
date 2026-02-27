@@ -286,7 +286,7 @@ static void print_help(const char *program_name)
     printf("  -d, --disk FILE           Load disk image from file\n");
     printf("  -i, --instructions NUM    Number of instructions to execute (0=unlimited, default=0)\n");
     printf("  -D, --disassemble FILE    Write disassembly to FILE\n");
-    printf("  -m, --render-mode MODE    Rendering mode: block (2x2), braille (2x4, default), or ocr (32x24)\n");
+    printf("  -m, --render-mode MODE    Rendering mode: block (2x2), braille (2x4), or ocr (32x24, default)\n");
     printf("  -k, --simulate-key STRING Simulate key presses (auto-replay starting at 3s, spaced 500ms)\n");
     printf("\n");
 }
@@ -871,10 +871,10 @@ int main(int argc, char *argv[])
     const char *tap_file = NULL;
     const char *disk_file = NULL;
     const char *disasm_file = NULL;
-    const char *simulated_keys = NULL;                     // Simulated key string for testing
-    int use_authentic_tape_loading = 1;                    // Default: use ROM loader (authentic)
-    uint64_t instructions_to_run = 0;                      // Default: unlimited
-    ula_render_mode_t render_mode = ULA_RENDER_BRAILLE2X4; // Default: braille
+    const char *simulated_keys = NULL;              // Simulated key string for testing
+    int use_authentic_tape_loading = 1;             // Default: use ROM loader (authentic)
+    uint64_t instructions_to_run = 0;               // Default: unlimited
+    ula_render_mode_t render_mode = ULA_RENDER_OCR; // Default: ocr
 
     // Command-line options
     struct option long_options[] = {

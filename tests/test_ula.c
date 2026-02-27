@@ -428,6 +428,49 @@ static int test_attributes_braille(void)
 }
 
 /**
+ * Test: Blink attribute extraction
+ */
+static int test_blink_attribute(void)
+{
+    printf("Test: Blink attribute extraction...\n");
+
+    // Create test VRAM with different attribute combinations
+    uint8_t *vram = calloc(SPECTRUM_RAM_SIZE, 1);
+
+    // Set attribute at (0,0) with blink bit set
+    // Attribute format: [BLINK][BRIGHT][PAPER2][PAPER1][PAPER0][INK2][INK1][INK0]
+    // Position (0,0) is at attribute address SPECTRUM_VRAM_SIZE + 0
+    vram[SPECTRUM_VRAM_SIZE + 0] = 0x87; // Blink=1, Bright=0, Paper=0 (black), Ink=7 (white)
+
+    // Set attribute at (8,8) without blink bit
+    vram[SPECTRUM_VRAM_SIZE + 33] = 0x47; // Blink=0, Bright=1, Paper=0 (black), Ink=7 (white)
+
+    // Set attribute at (16,0) with blink and bright
+    vram[SPECTRUM_VRAM_SIZE + 2] = 0xC2; // Blink=1, Bright=1, Paper=0 (black), Ink=2 (red)
+
+    // Test attribute extraction at (0,0) - should have blink
+    color_attr_t attr1 = get_attribute(vram, 0, 0);
+    TEST_ASSERT(attr1.blink == 1, "Blink should be set at (0,0)");
+    TEST_ASSERT(attr1.ink == 7, "Ink should be white (7) at (0,0)");
+    TEST_ASSERT(attr1.paper == 0, "Paper should be black (0) at (0,0)");
+    TEST_ASSERT(attr1.bright == 0, "Bright should be 0 at (0,0)");
+
+    // Test attribute extraction at (8,8) - should not have blink
+    color_attr_t attr2 = get_attribute(vram, 8, 8);
+    TEST_ASSERT(attr2.blink == 0, "Blink should not be set at (8,8)");
+    TEST_ASSERT(attr2.bright == 1, "Bright should be 1 at (8,8)");
+
+    // Test attribute extraction at (16,0) - should have both blink and bright
+    color_attr_t attr3 = get_attribute(vram, 16, 0);
+    TEST_ASSERT(attr3.blink == 1, "Blink should be set at (16,0)");
+    TEST_ASSERT(attr3.bright == 1, "Bright should be set at (16,0)");
+    TEST_ASSERT(attr3.ink == 2, "Ink should be red (2) at (16,0)");
+
+    free(vram);
+    return 1;
+}
+
+/**
  * Run all tests
  */
 int main(void)
@@ -491,6 +534,10 @@ int main(void)
 
     total++;
     if (test_attributes_braille())
+        passed++;
+
+    total++;
+    if (test_blink_attribute())
         passed++;
 
     printf("\n=== Results ===\n");
