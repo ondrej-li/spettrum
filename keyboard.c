@@ -91,6 +91,14 @@ static void add_pressed_key(unsigned char key);
  */
 static void translate_and_add_key(unsigned char ch)
 {
+    // Tab: CAPS SHIFT + SYMBOL SHIFT (Extended Mode)
+    if (ch == '\t' || ch == 0x09) // Tab key
+    {
+        add_pressed_key(0x10); // CAPS SHIFT
+        add_pressed_key(0x11); // SYMBOL SHIFT
+        return;
+    }
+
     // Backspace: CAPS SHIFT + 0
     if (ch == 0x08 || ch == 0x7F) // Backspace or DEL
     {
