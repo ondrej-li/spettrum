@@ -3220,3 +3220,18 @@ void z80_set_register(z80_emulator_t *z80, const char *reg_name, uint16_t value)
 
     pthread_mutex_unlock(&z80->state_lock);
 }
+
+/**
+ * Get current CPU cycle count
+ */
+uint64_t z80_get_cycles(z80_emulator_t *z80)
+{
+    if (!z80)
+        return 0;
+
+    pthread_mutex_lock(&z80->state_lock);
+    uint64_t cycles = z80->cyc;
+    pthread_mutex_unlock(&z80->state_lock);
+
+    return cycles;
+}
