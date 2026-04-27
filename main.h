@@ -18,6 +18,7 @@
 #include "z80.h"
 #include "ula.h"
 #include "tap.h"
+#include "beeper.h"
 
 // Emulator state
 typedef struct
@@ -62,6 +63,10 @@ typedef struct
     uint64_t frame_cycle_count; // Cycles since last interrupt
     uint64_t int_asserted_time; // Cycle count when INT was asserted
     int int_asserted;           // Whether INT is currently asserted
+
+    // Audio/beeper
+    beeper_state_t *beeper; // Beeper audio system
+    int audio_enabled;      // Whether audio is enabled (command-line option)
 } spettrum_emulator_t;
 
 #endif

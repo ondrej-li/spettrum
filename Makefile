@@ -1,7 +1,28 @@
+# Platform detection
+UNAME_S := $(shell uname -s)
+
+# Default compiler and flags
 CC = clang
 CFLAGS = -Wall -Wextra -O2 -pthread
 CFLAGS_DEBUG = -Wall -Wextra -O0 -g -pthread -DDISABLE_RENDERING
 LDFLAGS = -pthread
+
+# Platform-specific settings
+ifeq ($(UNAME_S),Linux)
+    # Linux-specific settings
+    CC = clang
+    CFLAGS = -Wall -Wextra -O2 -pthread
+    CFLAGS_DEBUG = -Wall -Wextra -O0 -g -pthread -DDISABLE_RENDERING
+    LDFLAGS = -pthread
+endif
+
+ifeq ($(UNAME_S),Darwin)
+    # macOS-specific settings
+    CC = clang
+    CFLAGS = -Wall -Wextra -O2 -pthread
+    CFLAGS_DEBUG = -Wall -Wextra -O0 -g -pthread -DDISABLE_RENDERING
+    LDFLAGS = -pthread -framework AudioToolbox -framework CoreAudio
+endif
 
 SRC_DIR = src
 OBJ_DIR = obj
@@ -14,6 +35,7 @@ Z80_OBJ = $(OBJ_DIR)/z80.o
 Z80_SNAPSHOT_OBJ = $(OBJ_DIR)/z80snapshot.o
 KEYBOARD_OBJ = $(OBJ_DIR)/keyboard.o
 TAP_OBJ = $(OBJ_DIR)/tap.o
+BEEPER_OBJ = $(OBJ_DIR)/beeper.o
 SOURCES = $(wildcard $(SRC_DIR)/*.c)
 OBJECTS = $(SOURCES:$(SRC_DIR)/%.c=$(OBJ_DIR)/%.o)
 
@@ -24,8 +46,8 @@ all: $(TARGET)
 debug: CFLAGS = $(CFLAGS_DEBUG)
 debug: $(TARGET)
 
-$(TARGET): main.c $(Z80_OBJ) $(ULA_OBJ) $(DISASM_OBJ) $(Z80_SNAPSHOT_OBJ) $(KEYBOARD_OBJ) $(TAP_OBJ) | $(BIN_DIR)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ main.c $(Z80_OBJ) $(ULA_OBJ) $(DISASM_OBJ) $(Z80_SNAPSHOT_OBJ) $(KEYBOARD_OBJ) $(TAP_OBJ)
+$(TARGET): main.c $(Z80_OBJ) $(ULA_OBJ) $(DISASM_OBJ) $(Z80_SNAPSHOT_OBJ) $(KEYBOARD_OBJ) $(TAP_OBJ) $(BEEPER_OBJ) | $(BIN_DIR)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ main.c $(Z80_OBJ) $(ULA_OBJ) $(DISASM_OBJ) $(Z80_SNAPSHOT_OBJ) $(KEYBOARD_OBJ) $(TAP_OBJ) $(BEEPER_OBJ)
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
@@ -59,6 +81,9 @@ $(KEYBOARD_OBJ): keyboard.c keyboard.h | $(OBJ_DIR)
 
 $(TAP_OBJ): tap.c tap.h | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -c -o $@ tap.c
+
+$(BEEPER_OBJ): beeper.c beeper.h | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -c -o $@ beeper.c
 
 test:
 	$(MAKE) -C tests run

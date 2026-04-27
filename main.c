@@ -288,6 +288,8 @@ static void print_help(const char *program_name)
     printf("  -D, --disassemble FILE    Write disassembly to FILE\n");
     printf("  -m, --render-mode MODE    Rendering mode: block (2x2), braille (2x4), or ocr (32x24, default)\n");
     printf("  -k, --simulate-key STRING Simulate key presses (auto-replay starting at 3s, spaced 500ms)\n");
+    printf("  -a, --audio on|off        Enable or disable beeper audio (default: on)\n");
+    printf("  -V, --volume NUM          Set audio volume 0-100 (default: 50)\n");
     printf("\n");
 }
 
@@ -425,28 +427,58 @@ static uint8_t generic_io_read(void *user_data, uint16_t port)
  */
 static void generic_io_write(void *user_data, uint16_t port, uint8_t value)
 {
-    z80_callback_context_t *ctx = (z80_callback_context_t *)user_data;
-    if (!ctx || !ctx->io_data)
-        return;
+    static FILE *io_log = NULL;
+    static int io_write_count = 0;
 
-    spettrum_emulator_t *emulator = (spettrum_emulator_t *)ctx->io_data;
+    // user_data is directly the emulator pointer (z80.c extracts it from context)
+    spettrum_emulator_t *emulator = (spettrum_emulator_t *)user_data;
     if (!emulator)
         return;
 
     // Port 0xFE - ULA control and keyboard row selection
     if ((port & 0xFF) == 0xFE)
     {
+        // Log first few port writes
+        if (io_write_count < 10)
+        {
+            if (!io_log)
+                io_log = fopen("io_debug.log", "w");
+            if (io_log)
+            {
+                fprintf(io_log, "Port 0xFE write #%d: value=0x%02X (border=%d, mic=%d, beeper=%d)\n",
+                        io_write_count, value, value & 0x07, (value >> 3) & 0x01, (value >> 4) & 0x01);
+                fflush(io_log);
+            }
+            io_write_count++;
+        }
+
         // Bits 0-2: border color
         uint8_t border_color = value & 0x07;
         ula_set_border_color(emulator->display, border_color);
 
-        // Bits 3-4: tape control (not implemented)
+        // Bit 3: MIC output (cassette)
+        uint8_t mic_bit = (value >> 3) & 0x01;
+
+        // Bit 4: Beeper/speaker
+        uint8_t beeper_bit = (value >> 4) & 0x01;
+
+        // Update beeper with current CPU cycle count
+        if (emulator->beeper && emulator->cpu)
+        {
+            uint64_t cpu_cycle = z80_get_cycles(emulator->cpu);
+            beeper_update(emulator->beeper, cpu_cycle, mic_bit, beeper_bit);
+        }
+        else if (io_write_count < 10 && io_log)
+        {
+            fprintf(io_log, "  WARNING: beeper_update skipped (beeper=%p, cpu=%p)\n",
+                    (void *)emulator->beeper, (void *)emulator->cpu);
+            fflush(io_log);
+        }
+
         // Bits 5-7: keyboard row selector
         // The ROM code uses OUT (C), B to set the row selector
         // which tells us which row of the keyboard matrix to scan
         keyboard_set_row_selector(value);
-
-        // Bit 6-7: unused
     }
     // Other ports: silently ignore (not implemented)
 }
@@ -537,6 +569,19 @@ static spettrum_emulator_t *emulator_init(ula_render_mode_t render_mode)
     emulator->int_asserted = 0;
     emulator->int_asserted_time = 0;
 
+    // Initialize beeper audio (default enabled, 50% volume)
+    // Note: Audio is initialized but not started yet - will be started after command-line options are parsed
+    emulator->audio_enabled = 1; // Default enabled, will be overridden by command-line option
+    emulator->beeper = beeper_init(3500000, 44100, true);
+    if (emulator->beeper)
+    {
+        beeper_set_volume(emulator->beeper, 50); // 50% volume (will be overridden by -V option)
+    }
+    else
+    {
+        fprintf(stderr, "Warning: Failed to initialize beeper audio (continuing without sound)\n");
+    }
+
     emulator->running = 1;
 
     return emulator;
@@ -608,6 +653,10 @@ static void emulator_cleanup(spettrum_emulator_t *emulator)
     // Close tape player if active
     if (emulator->tape_player)
         tape_player_close(emulator->tape_player);
+
+    // Stop and destroy beeper
+    if (emulator->beeper)
+        beeper_destroy(emulator->beeper);
 
     if (emulator->cpu)
         z80_cleanup(emulator->cpu);
@@ -875,6 +924,8 @@ int main(int argc, char *argv[])
     int use_authentic_tape_loading = 1;             // Default: use ROM loader (authentic)
     uint64_t instructions_to_run = 0;               // Default: unlimited
     ula_render_mode_t render_mode = ULA_RENDER_OCR; // Default: ocr
+    int audio_enabled = 1;                          // Default: audio enabled
+    int audio_volume = 50;                          // Default: 50% volume
 
     // Command-line options
     struct option long_options[] = {
@@ -889,12 +940,14 @@ int main(int argc, char *argv[])
         {"disassemble", required_argument, 0, 'D'},
         {"render-mode", required_argument, 0, 'm'},
         {"simulate-key", required_argument, 0, 'k'},
+        {"audio", required_argument, 0, 'a'},
+        {"volume", required_argument, 0, 'V'},
         {0, 0, 0, 0}};
 
     // Parse command-line arguments
     int option_index = 0;
     int c;
-    while ((c = getopt_long(argc, argv, "hvr:s:t:qd:i:D:m:k:", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "hvr:s:t:qd:i:D:m:k:a:V:", long_options, &option_index)) != -1)
     {
         switch (c)
         {
@@ -948,6 +1001,31 @@ int main(int argc, char *argv[])
             // Simulate keys for testing (string of characters)
             simulated_keys = optarg;
             break;
+        case 'a':
+            // Audio on/off
+            if (strcmp(optarg, "on") == 0 || strcmp(optarg, "1") == 0 || strcmp(optarg, "yes") == 0)
+            {
+                audio_enabled = 1;
+            }
+            else if (strcmp(optarg, "off") == 0 || strcmp(optarg, "0") == 0 || strcmp(optarg, "no") == 0)
+            {
+                audio_enabled = 0;
+            }
+            else
+            {
+                fprintf(stderr, "Error: Invalid audio option '%s'. Use 'on' or 'off'\n", optarg);
+                return EXIT_FAILURE;
+            }
+            break;
+        case 'V':
+            // Audio volume (0-100)
+            audio_volume = atoi(optarg);
+            if (audio_volume < 0 || audio_volume > 100)
+            {
+                fprintf(stderr, "Error: Volume must be between 0 and 100\n");
+                return EXIT_FAILURE;
+            }
+            break;
         case '?':
             // getopt_long already printed error message
             fprintf(stderr, "Try '%s --help' for more information.\n", argv[0]);
@@ -976,6 +1054,24 @@ int main(int argc, char *argv[])
 
     // Initialize dump counter
     emulator->dump_count = 0;
+
+    // Configure audio based on command-line options
+    emulator->audio_enabled = audio_enabled;
+    if (emulator->beeper)
+    {
+        beeper_set_enabled(emulator->beeper, audio_enabled);
+        beeper_set_volume(emulator->beeper, audio_volume);
+
+        // Start/stop audio based on enabled flag
+        if (audio_enabled)
+        {
+            beeper_start(emulator->beeper);
+        }
+        else
+        {
+            beeper_stop(emulator->beeper);
+        }
+    }
 
     // Initialize pause state and speed control
     emulator->paused = 0;

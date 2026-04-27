@@ -190,6 +190,13 @@ uint16_t z80_get_pc(z80_emulator_t *z80);
 void z80_set_pc(z80_emulator_t *z80, uint16_t pc);
 
 /**
+ * Get current CPU cycle count
+ * @param z80 Emulator instance
+ * @return Total CPU cycles executed
+ */
+uint64_t z80_get_cycles(z80_emulator_t *z80);
+
+/**
  * Start asynchronous emulation
  * @param z80 Emulator instance
  * @return 0 on success
