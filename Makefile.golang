@@ -1,0 +1,23 @@
+.PHONY: build test run clean vet race
+
+BINARY := bin/spettrum
+CMD := ./cmd/spettrum
+
+build:
+	go build -o $(BINARY) $(CMD)
+
+test:
+	go test ./...
+
+run: build
+	$(BINARY)
+
+vet:
+	go vet ./...
+
+race:
+	go test -race ./...
+
+clean:
+	rm -f $(BINARY)
+	go clean -testcache

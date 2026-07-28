@@ -16,13 +16,23 @@ The emulator can run authentic Spectrum programs including system ROMs, with rea
 
 ## Building
 
-### Prerequisites
+### Go (primary)
 
-- **clang** compiler (or any C compiler)
-- **POSIX-compatible system** (macOS, Linux)
-- **pthread** library (for multi-threaded rendering)
+```bash
+# Build
+go build -o bin/spettrum ./cmd/spettrum
 
-### Build Commands
+# Run
+go run ./cmd/spettrum --rom rom/ZX_Spectrum_48k.rom
+
+# Test
+go test ./...
+
+# Race detector
+go test -race ./...
+```
+
+### C (legacy, kept for reference)
 
 ```bash
 # Build the executable
@@ -35,60 +45,35 @@ make debug
 make run
 ```
 
-The executable is generated at `bin/spettrum`.
-
-## Running the Emulator
-
-### Basic Execution
-
-```bash
-# Run with default settings (using system ROMs if available)
-./bin/spettrum
-
-# View help and available options
-./bin/spettrum --help
-```
-
-### Command-Line Options
+## Project Structure
 
 ```
-  -h, --help                 Show help message
-  -v, --version              Show version information
-  -r, --rom FILE             Load ROM from file
-  -d, --disk FILE            Load disk image from file
-  -i, --instructions NUM     Number of instructions to execute (0=unlimited)
-  -D, --disassemble FILE     Write disassembly output to FILE
-  -m, --render-mode MODE     Rendering mode: 'block' (2x2) or 'braille' (2x4, default)
-  -k, --simulate-key CHAR    Simulate a key press for testing
-```
-
-### ROM Files
-
-The project includes two main ROM images:
-
-1. **`rom/ZX_Spectrum_48k.rom`** - Standard Sinclair Spectrum 48K ROM
-   - The official operating system and BASIC interpreter
-   - Essential for normal Spectrum operation
-
-2. **`rom/DiagROMv.173.rom`** - Spectrum Diagnostic ROM
-   - Used for system diagnostics and testing
-   - Useful for verifying emulator correctness
-
-### Example Usage
-
-```bash
-# Run with standard 48K ROM
-./bin/spettrum --rom rom/ZX_Spectrum_48k.rom
-
-# Run with diagnostic ROM and render in 2x2 block mode
-./bin/spettrum --rom rom/DiagROMv.173.rom --render-mode block
-
-# Execute with disassembly logging
-./bin/spettrum --rom rom/ZX_Spectrum_48k.rom --disassemble disasm.log
-
-# Run for a specific number of instructions
-./bin/spettrum --rom rom/ZX_Spectrum_48k.rom --instructions 100000
-```
+spettrum/
+├── cmd/spettrum/main.go        # CLI entry point
+├── pkg/
+│   ├── z80/                    # Z80 CPU emulation
+│   │   ├── cpu.go              # Registers, CPU struct, interfaces
+│   │   ├── instructions.go     # Full instruction set (~3000 lines)
+│   │   ├── disasm.go           # (future) Disassembler
+│   │   └── cpu_test.go         # 62 instruction tests
+│   ├── ula/                    # Terminal renderer
+│   │   └── ula.go              # VRAM→Unicode, 3 modes, 50Hz timing
+│   ├── keyboard/               # Spectrum keyboard matrix
+│   │   └── keyboard.go
+│   ├── beeper/                 # Audio output
+│   │   └── beeper.go
+│   ├── tap/                    # TAP cassette loader
+│   │   └── tap.go
+│   └── snapshot/               # .z80 snapshot loader
+│       └── snapshot.go
+├── internal/
+│   └── emulator/
+│       ├── emulator.go         # Module integration, main loop
+│       └── romdata/            # Embedded default ROM
+├── rom/                        # ROM images
+├── bin/                        # Build output
+├── go.mod / go.sum
+└── Makefile.golang             # Go build targets
 
 ## Debugging
 

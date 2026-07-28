@@ -1,4 +1,4 @@
-name: C/C++ CI
+name: CI
 
 on:
   push:
@@ -7,13 +7,28 @@ on:
     branches: [ "main" ]
 
 jobs:
-  build:
-
+  c-build:
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v4
     - name: clean
       run: make clean
-    - name: make 
+    - name: make
       run: make
+
+  go-build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+    - name: go vet
+      run: make -f Makefile.golang vet
+    - name: go build
+      run: make -f Makefile.golang build
+    - name: go test
+      run: make -f Makefile.golang test
+    - name: go test -race
+      run: make -f Makefile.golang race
