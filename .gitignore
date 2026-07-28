@@ -40,4 +40,9 @@ Makefile.cmake
 # Dependencies
 *.out
 *.log
+vendor/
+
+# Go build output
+bin/spettrum
+*.test
 *.z80
