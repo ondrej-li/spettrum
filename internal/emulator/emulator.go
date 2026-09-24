@@ -38,6 +38,16 @@ const (
 	simKeyGapFrames   = 25  // ~500ms between simulated keys
 )
 
+// tapeArmReadsPerFrame is how often the machine has to look at the tape port in
+// one frame before the tape is allowed to start.
+//
+// The ROM's keyboard scan reads the port about eight times a frame, from the
+// moment it boots, and its tape routine about twelve hundred while it is
+// loading. Anything in between is either a slow loader or a program watching the
+// keyboard; either way, starting the tape then is no worse than starting it at
+// boot, and the leader running out is only noticed if a load follows.
+const tapeArmReadsPerFrame = 32
+
 // frameDuration is how long one emulated frame lasts in real time. It is
 // derived from the CPU clock rather than assumed, because the main loop is paced
 // with it while the audio is generated from the cycles a frame contains: the two
@@ -105,6 +115,10 @@ type Emulator struct {
 	audioDevice *beeper.DeviceSink
 
 	tapPlayer *tap.Player
+	// tapeArmed records that the machine has started polling the tape port
+	// quickly, which is what a load looks like; see tapeArmReadsPerFrame.
+	tapeArmed          bool
+	tapeReadsThisFrame int
 
 	// Disassembly
 	disasmFile *os.File
@@ -190,7 +204,7 @@ func (e *Emulator) Init() error {
 
 	// Create ULA
 	mode := e.cfg.RenderMode
-	if mode == 0 {
+	if mode == ula.RenderModeUnset {
 		mode = ula.RenderOCR
 	}
 	e.display = ula.New(e.mem[VRAMStart:VRAMStart+ula.TotalVRAM], mode)
@@ -215,20 +229,16 @@ func (e *Emulator) Init() error {
 		})
 	}
 
-	// Load TAP file
+	// Load TAP file. The file goes to the tape player rather than into memory:
+	// the ROM's own loader is what knows where each block belongs, and following
+	// it is the only way a tape with several parts - or one with a loader of its
+	// own - can load at all.
 	if e.cfg.TAPFile != "" {
-		if e.cfg.QuickLoad {
-			_, _, err := tap.LoadToMemory(e.cfg.TAPFile, e.mem[:], RAMStart)
-			if err != nil {
-				return fmt.Errorf("quick-load TAP: %w", err)
-			}
-		} else {
-			tp, err := tap.NewPlayer(e.cfg.TAPFile)
-			if err != nil {
-				return fmt.Errorf("open TAP player: %w", err)
-			}
-			e.tapPlayer = tp
+		tp, err := tap.NewPlayer(e.cfg.TAPFile)
+		if err != nil {
+			return fmt.Errorf("open TAP: %w", err)
 		}
+		e.tapPlayer = tp
 	}
 
 	// Open disassembly file
@@ -374,6 +384,7 @@ func (e *Emulator) Run() error {
 		// End of frame: raise the 50Hz interrupt, advance the emulated clock the
 		// keyboard timers run on, and service simulated key presses.
 		e.frameCount++
+		e.tapeReadsThisFrame = 0
 		e.cpu.GenInt(0xFF)
 		e.kbd.Tick(e.cpu.Cycles)
 		e.simulateKeys()
@@ -383,9 +394,14 @@ func (e *Emulator) Run() error {
 		}
 
 		// Turn this frame's speaker writes into samples now, so they are queued
-		// while the emulator sleeps rather than after it wakes up.
+		// while the emulator sleeps rather than after it wakes up. A tape being
+		// wound past does not: the sound card plays in real time, so handing it
+		// audio that was emulated at many times real speed would only drag the
+		// load back down to the card's pace.
 		if e.beeper != nil {
-			if err := e.beeper.EndFrame(e.cpu.Cycles); err != nil {
+			if e.windingTape() {
+				e.beeper.Skip(e.cpu.Cycles)
+			} else if err := e.beeper.EndFrame(e.cpu.Cycles); err != nil {
 				return fmt.Errorf("audio: %w", err)
 			}
 		}
@@ -399,7 +415,7 @@ func (e *Emulator) Run() error {
 		if _, err := io.WriteString(e.out, e.display.RenderFrame()); err != nil {
 			return fmt.Errorf("write frame: %w", err)
 		}
-		if !e.cfg.Unpaced && !e.pacedByAudio() {
+		if !e.cfg.Unpaced && !e.pacedByAudio() && !e.windingTape() {
 			ula.WaitFrame(frameStart, frameDuration)
 		}
 	}
@@ -426,6 +442,17 @@ func (e *Emulator) Run() error {
 // consuming.
 func (e *Emulator) pacedByAudio() bool {
 	return e.audioDevice != nil && e.audioDevice.Paced()
+}
+
+// windingTape reports whether the tape is being wound past at full speed.
+//
+// Playing a tape at the speed of the original takes minutes, which is authentic
+// but tedious, so by default the frame pacing is dropped while a tape is running
+// and the machine is left to load as fast as the host allows. Nothing about the
+// emulation changes: the ROM still reads the same pulses in the same cycles, so
+// the tape is wound past rather than fast-forwarded.
+func (e *Emulator) windingTape() bool {
+	return e.cfg.QuickLoad && e.tapPlayer != nil && !e.tapPlayer.IsFinished()
 }
 
 // syncTerminalSize refreshes the frame geometry from the window the emulator is
@@ -488,9 +515,6 @@ func (e *Emulator) Close() {
 	if e.beeper != nil {
 		e.beeper.Close()
 	}
-	if e.tapPlayer != nil {
-		e.tapPlayer.Close()
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -517,9 +541,18 @@ func (e *Emulator) ReadIO(port uint16) uint8 {
 	if pl == 0xFE {
 		// Keyboard
 		result := e.kbd.ReadPort(port)
+		// The tape holds off until the machine asks for it: the ROM's keyboard
+		// scan reads the port a few times a frame from the moment it boots, so
+		// starting the tape there would play the whole thing out to nobody and
+		// leave nothing to load. The routine that loads a tape polls the port
+		// thousands of times a second instead, which is the signal to start.
+		e.tapeReadsThisFrame++
+		if e.tapeReadsThisFrame >= tapeArmReadsPerFrame {
+			e.tapeArmed = true
+		}
 		// Tape EAR bit (bit 6): high while the tape signal is high.
-		if e.tapPlayer != nil && !e.tapPlayer.IsFinished() &&
-			e.tapPlayer.ReadEAR(int(e.cpu.Cycles)) != 0 {
+		if e.tapeArmed && e.tapPlayer != nil && !e.tapPlayer.IsFinished() &&
+			e.tapPlayer.ReadEAR(e.cpu.Cycles) != 0 {
 			result |= 0x40
 		} else {
 			result &^= 0x40

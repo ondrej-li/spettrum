@@ -183,6 +183,22 @@ func (p *Player) stereoize() []float32 {
 	return p.stereo
 }
 
+// Skip throws away the emulated time up to endCycle without producing any
+// samples.
+//
+// It is for a stretch of emulated time that is not being played in real time,
+// such as the emulator winding a tape past at full speed. Handing that audio to
+// the sound card, which plays in real time, would only hold the emulator back;
+// skipping it keeps the audio timeline lined up with the emulated one, so
+// playing carries on in the right place rather than in a burst of catch-up.
+func (p *Player) Skip(endCycle uint64) {
+	if endCycle <= p.lastCycle {
+		return
+	}
+	p.events = p.events[:0]
+	p.lastCycle = endCycle
+}
+
 // Close releases the sink.
 func (p *Player) Close() error {
 	if p.sink == nil {

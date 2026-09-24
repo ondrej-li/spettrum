@@ -361,6 +361,53 @@ func cp(r *Registers, val uint8) {
 // Rotate & shift helpers (CB-prefix)
 // ==========================================================================
 
+// The four accumulator rotates (RLCA, RRCA, RLA, RRA) differ from their
+// CB-prefixed cousins in the flags they touch: only the carry and the
+// undocumented bits 3 and 5 change, while the sign, zero and parity flags keep
+// the value they had. Routines rely on this to keep a flag across a rotate.
+func acc_rotateFlags(r *Registers, val uint8, carry bool) {
+	f := r.F & (FlagS | FlagZ | FlagP)
+	f |= val & (FlagY | FlagX)
+	if carry {
+		f |= FlagC
+	}
+	r.F = f
+}
+
+func acc_rlc(r *Registers, val uint8) uint8 {
+	bit := val >> 7
+	val = (val << 1) | bit
+	acc_rotateFlags(r, val, bit != 0)
+	return val
+}
+
+func acc_rrc(r *Registers, val uint8) uint8 {
+	bit := val & 1
+	val = (val >> 1) | (bit << 7)
+	acc_rotateFlags(r, val, bit != 0)
+	return val
+}
+
+func acc_rl(r *Registers, val uint8) uint8 {
+	bit := val >> 7
+	val = (val << 1)
+	if r.F&FlagC != 0 {
+		val |= 1
+	}
+	acc_rotateFlags(r, val, bit != 0)
+	return val
+}
+
+func acc_rr(r *Registers, val uint8) uint8 {
+	bit := val & 1
+	val = (val >> 1)
+	if r.F&FlagC != 0 {
+		val |= 0x80
+	}
+	acc_rotateFlags(r, val, bit != 0)
+	return val
+}
+
 func cb_rlc(r *Registers, val uint8) uint8 {
 	old := val >> 7
 	val = (val << 1) | old
@@ -1497,27 +1544,22 @@ func (c *CPU) execOpcodeBase(opcode uint8) int {
 		r.SP = r.HL()
 		return 6 // LD SP, HL
 
-	// === Rotates on A ===
+		// === Rotates on A ===
+	// These are not the CB-prefixed rotates: they leave the sign, zero and
+	// parity flags exactly as they were and only move the carry, so a routine
+	// can use Z to remember something across them. The ROM's tape loader does
+	// precisely that.
 	case opcode == 0x07:
-		r.A = cb_rlc(r, r.A)
-		r.F &^= FlagY | FlagX
-		r.F |= r.A & (FlagY | FlagX)
+		r.A = acc_rlc(r, r.A)
 		return 4 // RLCA
 	case opcode == 0x0F:
-		r.A = cb_rrc(r, r.A)
-		r.F &^= FlagY | FlagX
-		r.F |= r.A & (FlagY | FlagX)
+		r.A = acc_rrc(r, r.A)
 		return 4 // RRCA
 	case opcode == 0x17:
-		r.A = cb_rl(r, r.A)
-		r.F &^= FlagY | FlagX
-		r.F |= r.A & (FlagY | FlagX)
+		r.A = acc_rl(r, r.A)
 		return 4 // RLA
 	case opcode == 0x1F:
-		r.A = cb_rr(r, r.A)
-		r.F &^= FlagY | FlagX
-		r.F |= r.A & (FlagY | FlagX)
-		return 4 // RRA
+		r.A = acc_rr(r, r.A)
 
 	// === 0x03–0x3B: 16-bit inc/dec ===
 	case opcode == 0x03:
