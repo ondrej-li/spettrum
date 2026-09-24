@@ -9,7 +9,7 @@ type mockMem struct {
 	mem [65536]uint8
 }
 
-func (m *mockMem) ReadMemory(addr uint16) uint8  { return m.mem[addr] }
+func (m *mockMem) ReadMemory(addr uint16) uint8       { return m.mem[addr] }
 func (m *mockMem) WriteMemory(addr uint16, val uint8) { m.mem[addr] = val }
 
 // mockIO is a simple I/O port array for testing.
@@ -211,7 +211,7 @@ func TestINCBC(t *testing.T) {
 
 func TestRLCA(t *testing.T) {
 	cpu, mem, _ := newTestCPU()
-	cpu.Regs.A = 0x81 // 10000001
+	cpu.Regs.A = 0x81           // 10000001
 	loadOpcodes(cpu, mem, 0x07) // RLCA
 	cpu.Step()
 	if cpu.Regs.A != 0x03 { // 00000011
@@ -258,6 +258,124 @@ func TestOUTnA(t *testing.T) {
 	}
 }
 
+// TestEDInCRegisterSelection covers the register field of IN r,(C). Bits 3-5 of
+// the opcode select the register; the low three bits only separate IN from OUT.
+// Selecting on the low bits sends every input to B, which is where the Spectrum
+// ROM keeps the keyboard row selector, so the scan then reads the wrong rows.
+func TestEDInCRegisterSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		opcode uint8
+		reg    string
+	}{
+		{"IN B,(C)", 0x40, "B"},
+		{"IN C,(C)", 0x48, "C"},
+		{"IN D,(C)", 0x50, "D"},
+		{"IN E,(C)", 0x58, "E"},
+		{"IN H,(C)", 0x60, "H"},
+		{"IN L,(C)", 0x68, "L"},
+		{"IN A,(C)", 0x78, "A"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cpu, mem, io := newTestCPU()
+			io.ports[0x34] = 0x5A
+			cpu.Regs.SetBC(0x1234)
+			cpu.Regs.SetDE(0x1111)
+			cpu.Regs.SetHL(0x2222)
+			loadOpcodes(cpu, mem, 0xED, tc.opcode)
+			cpu.Step()
+
+			got := map[string]uint8{
+				"B": cpu.Regs.B, "C": cpu.Regs.C, "D": cpu.Regs.D, "E": cpu.Regs.E,
+				"H": cpu.Regs.H, "L": cpu.Regs.L, "A": cpu.Regs.A,
+			}[tc.reg]
+			if got != 0x5A {
+				t.Errorf("expected %s=$5A, got $%02X", tc.reg, got)
+			}
+			// The row selector lives in B and must survive an input.
+			if tc.reg != "B" && cpu.Regs.B != 0x12 {
+				t.Errorf("IN clobbered B: got $%02X, want $12", cpu.Regs.B)
+			}
+			if io.readCount != 1 {
+				t.Errorf("expected 1 port read, got %d", io.readCount)
+			}
+		})
+	}
+}
+
+// TestEDInCFlags checks IN r,(C) sets S/Z/P from the value, resets N and H, and
+// leaves carry alone.
+func TestEDInCFlags(t *testing.T) {
+	cpu, mem, io := newTestCPU()
+	io.ports[0xFE] = 0x00
+	cpu.Regs.SetBC(0x00FE)
+	cpu.Regs.F = FlagC
+	loadOpcodes(cpu, mem, 0xED, 0x78) // IN A,(C)
+	cpu.Step()
+	if cpu.Regs.A != 0x00 {
+		t.Errorf("IN A,(C): expected A=$00, got $%02X", cpu.Regs.A)
+	}
+	if cpu.Regs.F&FlagZ == 0 {
+		t.Error("IN A,(C): zero flag should be set for a zero byte")
+	}
+	if cpu.Regs.F&FlagC == 0 {
+		t.Error("IN A,(C): carry must be left alone")
+	}
+	if cpu.Regs.F&FlagN != 0 || cpu.Regs.F&FlagH != 0 {
+		t.Error("IN A,(C): N and H must be reset")
+	}
+}
+
+// TestEDOutCRegisterSelection covers OUT (C),r. These opcodes used to be caught by
+// the IN r,(C) range check and executed as inputs, so nothing was ever written.
+func TestEDOutCRegisterSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		opcode uint8
+		value  uint8
+	}{
+		{"OUT (C),B", 0x41, 0x12},
+		{"OUT (C),C", 0x49, 0x34},
+		{"OUT (C),D", 0x51, 0x56},
+		{"OUT (C),E", 0x59, 0x78},
+		{"OUT (C),H", 0x61, 0x9A},
+		{"OUT (C),L", 0x69, 0xBC},
+		{"OUT (C),A", 0x79, 0xDE},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cpu, mem, io := newTestCPU()
+			cpu.Regs.SetBC(0x1234)
+			cpu.Regs.SetDE(0x5678)
+			cpu.Regs.SetHL(0x9ABC)
+			cpu.Regs.A = 0xDE
+			loadOpcodes(cpu, mem, 0xED, tc.opcode)
+			cpu.Step()
+
+			if io.writeCount != 1 {
+				t.Fatalf("expected 1 port write, got %d", io.writeCount)
+			}
+			if io.ports[0x34] != tc.value {
+				t.Errorf("port $1234 = $%02X, want $%02X", io.ports[0x34], tc.value)
+			}
+			if io.readCount != 0 {
+				t.Errorf("OUT (C),r performed %d port reads", io.readCount)
+			}
+		})
+	}
+}
+
+// TestEDOutC0 covers the undocumented OUT (C),0.
+func TestEDOutC0(t *testing.T) {
+	cpu, mem, io := newTestCPU()
+	cpu.Regs.SetBC(0x1234)
+	cpu.Regs.A = 0xFF
+	loadOpcodes(cpu, mem, 0xED, 0x71)
+	cpu.Step()
+	if io.writeCount != 1 || io.ports[0x34] != 0x00 {
+		t.Errorf("OUT (C),0: wrote %d bytes, port=$%02X", io.writeCount, io.ports[0x34])
+	}
+}
+
 func TestJRn(t *testing.T) {
 	cpu, mem, _ := newTestCPU()
 	loadOpcodes(cpu, mem, 0x18, 0x05) // JR $0007 (PC=2 + 5 = 7)
@@ -269,7 +387,7 @@ func TestJRn(t *testing.T) {
 
 func TestJRNZ_taken(t *testing.T) {
 	cpu, mem, _ := newTestCPU()
-	cpu.Regs.F &^= FlagZ // clear Z flag
+	cpu.Regs.F &^= FlagZ              // clear Z flag
 	loadOpcodes(cpu, mem, 0x20, 0x03) // JR NZ, $0005
 	cpu.Step()
 	if cpu.Regs.PC != 5 {
@@ -279,7 +397,7 @@ func TestJRNZ_taken(t *testing.T) {
 
 func TestJRNZ_notTaken(t *testing.T) {
 	cpu, mem, _ := newTestCPU()
-	cpu.Regs.F |= FlagZ // set Z flag
+	cpu.Regs.F |= FlagZ               // set Z flag
 	loadOpcodes(cpu, mem, 0x20, 0x03) // JR NZ, $0005
 	cpu.Step()
 	if cpu.Regs.PC != 2 {
@@ -342,8 +460,8 @@ func TestDI_EI(t *testing.T) {
 	cpu.Regs.PC = 0
 	mem.mem[0] = 0xFB // EI
 	mem.mem[1] = 0x00 // NOP (EI takes effect after next instruction)
-	cpu.Step() // EI
-	cpu.Step() // NOP — EI now takes effect
+	cpu.Step()        // EI
+	cpu.Step()        // NOP — EI now takes effect
 	if !cpu.Regs.IFF1 {
 		t.Error("EI: IFF1 should be true after EI + next instruction")
 	}
@@ -407,7 +525,7 @@ func TestLDDn(t *testing.T) {
 
 func TestJPNZ_taken(t *testing.T) {
 	cpu, mem, _ := newTestCPU()
-	cpu.Regs.F &^= FlagZ // Z=0
+	cpu.Regs.F &^= FlagZ                    // Z=0
 	loadOpcodes(cpu, mem, 0xC2, 0x00, 0x30) // JP NZ, $3000
 	cpu.Step()
 	if cpu.Regs.PC != 0x3000 {
@@ -417,7 +535,7 @@ func TestJPNZ_taken(t *testing.T) {
 
 func TestJPNZ_notTaken(t *testing.T) {
 	cpu, mem, _ := newTestCPU()
-	cpu.Regs.F |= FlagZ // Z=1
+	cpu.Regs.F |= FlagZ                     // Z=1
 	loadOpcodes(cpu, mem, 0xC2, 0x00, 0x30) // JP NZ, $3000
 	cpu.Step()
 	if cpu.Regs.PC != 3 {
@@ -427,7 +545,7 @@ func TestJPNZ_notTaken(t *testing.T) {
 
 func TestCBRLC_B(t *testing.T) {
 	cpu, mem, _ := newTestCPU()
-	cpu.Regs.B = 0x81 // 10000001
+	cpu.Regs.B = 0x81                 // 10000001
 	loadOpcodes(cpu, mem, 0xCB, 0x00) // RLC B
 	cpu.Step()
 	if cpu.Regs.B != 0x03 {
@@ -440,7 +558,7 @@ func TestCBRLC_B(t *testing.T) {
 
 func TestCBBIT3_D(t *testing.T) {
 	cpu, mem, _ := newTestCPU()
-	cpu.Regs.D = 0x08 // bit 3 is set
+	cpu.Regs.D = 0x08                 // bit 3 is set
 	loadOpcodes(cpu, mem, 0xCB, 0x5A) // BIT 3, D
 	cpu.Step()
 	if cpu.Regs.D != 0x08 {
@@ -453,7 +571,7 @@ func TestCBBIT3_D(t *testing.T) {
 
 func TestCBIT3_D_zero(t *testing.T) {
 	cpu, mem, _ := newTestCPU()
-	cpu.Regs.D = 0x00 // bit 3 is clear
+	cpu.Regs.D = 0x00                 // bit 3 is clear
 	loadOpcodes(cpu, mem, 0xCB, 0x5A) // BIT 3, D
 	cpu.Step()
 	if cpu.Regs.F&FlagZ == 0 {
@@ -571,7 +689,7 @@ func TestDAA(t *testing.T) {
 	cpu.Regs.B = 0x08
 	// ADD A,B gives 0x11, then DAA corrects to 0x17 (BCD 17)
 	loadOpcodes(cpu, mem, 0x80, 0x27) // ADD A, B; DAA
-	cpu.Step() // ADD
+	cpu.Step()                        // ADD
 	if cpu.Regs.A != 0x11 {
 		t.Fatalf("ADD: expected A=$11, got $%02X", cpu.Regs.A)
 	}
@@ -588,7 +706,7 @@ func TestSBC(t *testing.T) {
 	cpu, mem, _ := newTestCPU()
 	cpu.Regs.A = 0x30
 	cpu.Regs.B = 0x10
-	cpu.Regs.F |= FlagC // carry set
+	cpu.Regs.F |= FlagC         // carry set
 	loadOpcodes(cpu, mem, 0x98) // SBC A, B
 	cpu.Step()
 	// 0x30 - 0x10 - 1 = 0x1F
@@ -695,13 +813,67 @@ func TestHALT(t *testing.T) {
 	loadOpcodes(cpu, mem, 0x76) // HALT
 	cpu.Step()
 	if !cpu.Regs.Halted {
-		t.Error("HALT: CPU should be halted")
+		t.Fatal("HALT: CPU should be halted")
 	}
-	// HALT should be exited on interrupt
+
+	// While halted, the CPU repeats internal NOPs.
+	pcAfterHalt := cpu.Regs.PC
+	if cycles := cpu.Step(); cycles != 4 {
+		t.Errorf("halted step: expected 4 T-states, got %d", cycles)
+	}
+	if cpu.Regs.PC != pcAfterHalt {
+		t.Errorf("halted step: PC moved from %04X to %04X", pcAfterHalt, cpu.Regs.PC)
+	}
+
+	// With interrupts disabled, a pending request must not leave HALT.
 	cpu.IntPending = true
+	cpu.Regs.IFF1 = false
 	cpu.Step()
+	if !cpu.Regs.Halted {
+		t.Error("HALT: CPU left halt with interrupts disabled")
+	}
+
+	// With interrupts enabled (IM 1) the request is accepted: the handler is
+	// entered and the interrupt sequence is charged to this step.
+	cpu.Regs.IM = 1
+	cpu.Regs.IFF1 = true
+	cpu.Regs.IFF2 = true
+	cpu.IntPending = true
+	spBefore := cpu.Regs.SP
+	if cycles := cpu.Step(); cycles != 4+13 {
+		t.Errorf("halt exit: expected %d T-states, got %d", 4+13, cycles)
+	}
 	if cpu.Regs.Halted {
-		t.Error("HALT: CPU should exit halt on interrupt")
+		t.Error("HALT: CPU should exit halt on accepted interrupt")
+	}
+	if cpu.Regs.PC != 0x0038 {
+		t.Errorf("HALT exit: expected PC=$0038, got $%04X", cpu.Regs.PC)
+	}
+	if cpu.Regs.SP != spBefore-2 {
+		t.Errorf("HALT exit: return address not pushed (SP %04X -> %04X)", spBefore, cpu.Regs.SP)
+	}
+	if cpu.Regs.IFF1 {
+		t.Error("HALT exit: interrupts should be disabled inside the handler")
+	}
+}
+
+func TestNMITakesPriorityAndExitsHalt(t *testing.T) {
+	cpu, mem, _ := newTestCPU()
+	cpu.Regs.SP = 0x8000
+	loadOpcodes(cpu, mem, 0x76) // HALT
+	cpu.Step()
+	cpu.GenNMI()
+	if cycles := cpu.Step(); cycles != 11 {
+		t.Errorf("NMI: expected 11 T-states, got %d", cycles)
+	}
+	if cpu.Regs.Halted {
+		t.Error("NMI: CPU should leave halt")
+	}
+	if cpu.Regs.PC != 0x0066 {
+		t.Errorf("NMI: expected PC=$0066, got $%04X", cpu.Regs.PC)
+	}
+	if cpu.Regs.IFF1 {
+		t.Error("NMI: IFF1 should be cleared")
 	}
 }
 

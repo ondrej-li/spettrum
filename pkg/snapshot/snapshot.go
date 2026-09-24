@@ -13,54 +13,54 @@ import (
 // ---------------------------------------------------------------------------
 
 const (
-	HeaderSize    = 30
-	V1MemSize     = 48 * 1024 // 48KB uncompressed
-	BlockHdrSize  = 3         // compressed_len (2) + page_number (1)
+	HeaderSize   = 30
+	V1MemSize    = 48 * 1024 // 48KB uncompressed
+	BlockHdrSize = 3         // compressed_len (2) + page_number (1)
 )
 
 // Hardware modes
 const (
-	HW48K       = 0
-	HW48KIF1    = 1
-	HWSAMRAM    = 2
-	HW128K      = 3
-	HW128KIF1   = 4
-	HWPlus3     = 5
-	HWPlus2A    = 6
-	HWPentagon  = 7
-	HWScorpion  = 8
+	HW48K      = 0
+	HW48KIF1   = 1
+	HWSAMRAM   = 2
+	HW128K     = 3
+	HW128KIF1  = 4
+	HWPlus3    = 5
+	HWPlus2A   = 6
+	HWPentagon = 7
+	HWScorpion = 8
 )
 
 // V1 header (30 bytes). All register values are 8-bit unless noted.
 type V1Header struct {
-	A, F        uint8
-	BC, HL      uint16 // little-endian
-	PC, SP      uint16
-	I, R        uint8
-	Flags       uint8  // bit 0 = R bit 7, bit 1-2 = border, etc.
-	DE          uint16
+	A, F          uint8
+	BC, HL        uint16 // little-endian
+	PC, SP        uint16
+	I, R          uint8
+	Flags         uint8 // bit 0 = R bit 7, bit 1-2 = border, etc.
+	DE            uint16
 	BC1, DE1, HL1 uint16
-	A1, F1      uint8
-	IY, IX      uint16
-	IFF1, IFF2  uint8
-	IM          uint8
+	A1, F1        uint8
+	IY, IX        uint16
+	IFF1, IFF2    uint8
+	IM            uint8
 }
 
 // V2Extended extends the V1 header with additional fields.
 type V2Extended struct {
-	Len               uint16 // extra header length (23 or 54/55)
-	PC                uint16 // overrides V1's PC=0
-	HardwareMode      uint8
-	LastOut           uint8 // last OUT to 0xFFFD (128K paging)
-	InterfaceROM      uint8
-	EmulationFlags    uint8
-	SoundRegisters    [16]uint8
+	Len            uint16 // extra header length (23 or 54/55)
+	PC             uint16 // overrides V1's PC=0
+	HardwareMode   uint8
+	LastOut        uint8 // last OUT to 0xFFFD (128K paging)
+	InterfaceROM   uint8
+	EmulationFlags uint8
+	SoundRegisters [16]uint8
 }
 
 // LoadResult holds the result of loading a .z80 snapshot.
 type LoadResult struct {
-	Version       int
-	HardwareMode  uint8
+	Version      int
+	HardwareMode uint8
 }
 
 // Load loads a .z80 snapshot file and restores CPU state and memory.

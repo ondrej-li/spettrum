@@ -1,6 +1,8 @@
 .PHONY: build test run clean vet race
 
-BINARY := bin/spettrum
+# NOTE: the C build (see Makefile) also produces bin/spettrum, so the Go build
+# uses a distinct name to avoid the two clobbering each other.
+BINARY := bin/spettrum-go
 CMD := ./cmd/spettrum
 
 build:

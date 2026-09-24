@@ -4,7 +4,7 @@ package keyboard
 
 import (
 	"os"
-	"time"
+	"sync"
 )
 
 // ---------------------------------------------------------------------------
@@ -20,51 +20,107 @@ const (
 // Key matrix: row → [5]column keys
 var keyMatrix = [8][5]byte{
 	{0x10, 'Z', 'X', 'C', 'V'},           // Row 0: SHIFT, Z, X, C, V
-	{'A', 'S', 'D', 'F', 'G'},             // Row 1: A, S, D, F, G
-	{'Q', 'W', 'E', 'R', 'T'},             // Row 2: Q, W, E, R, T
-	{'1', '2', '3', '4', '5'},             // Row 3: 1, 2, 3, 4, 5
-	{'0', '9', '8', '7', '6'},             // Row 4: 0, 9, 8, 7, 6
-	{'P', 'O', 'I', 'U', 'Y'},             // Row 5: P, O, I, U, Y
-	{0x0D, 'L', 'K', 'J', 'H'},            // Row 6: ENTER, L, K, J, H
-	{' ', KeySymbolShift, 'M', 'N', 'B'},  // Row 7: SPACE, SYMBOL SHIFT, M, N, B
+	{'A', 'S', 'D', 'F', 'G'},            // Row 1: A, S, D, F, G
+	{'Q', 'W', 'E', 'R', 'T'},            // Row 2: Q, W, E, R, T
+	{'1', '2', '3', '4', '5'},            // Row 3: 1, 2, 3, 4, 5
+	{'0', '9', '8', '7', '6'},            // Row 4: 0, 9, 8, 7, 6
+	{'P', 'O', 'I', 'U', 'Y'},            // Row 5: P, O, I, U, Y
+	{0x0D, 'L', 'K', 'J', 'H'},           // Row 6: ENTER, L, K, J, H
+	{' ', KeySymbolShift, 'M', 'N', 'B'}, // Row 7: SPACE, SYMBOL SHIFT, M, N, B
 }
 
 const (
 	maxPressedKeys = 64
-	keyHoldTime    = 100 * time.Millisecond
+
+	// keyHoldCycles is how long a host key press is held, measured in CPU
+	// T-states so that it tracks emulated time rather than wall-clock time.
+	// Raw terminal input only reports presses (never releases), so the emulator
+	// has to release them itself; 250000 T-states is about 70ms at 3.5MHz.
+	keyHoldCycles = 250_000
 )
 
-// pressedKey tracks a currently-held key and its press time.
+// pressedKey tracks a currently-held key and the T-state it was pressed at.
 type pressedKey struct {
-	key       byte
-	timestamp time.Time
+	key        byte
+	pressCycle uint64
 }
 
-// State holds the keyboard state.
+// State holds the keyboard state. It is safe for concurrent use: the input
+// goroutine writes to it while the CPU goroutine reads it.
 type State struct {
-	pressed   [maxPressedKeys]pressedKey
-	count     int
-	rowSelect uint8 // current row selector (bits 0-7: 0 = active)
+	mu      sync.Mutex
+	pressed [maxPressedKeys]pressedKey
+	count   int
+	now     uint64 // current CPU T-state, advanced by Tick
+	started bool
+	quit    bool // set when the user asks the emulator to stop
 }
 
 // New creates a new keyboard state.
 func New() *State {
-	return &State{rowSelect: 0xFF} // no row selected
+	return &State{}
 }
 
-// SetRowSelector sets the current keyboard row selector.
-// The upper byte of port 0xFE selects which row(s) to scan.
-func (s *State) SetRowSelector(sel uint8) {
-	s.rowSelect = sel
+// Tick records the current CPU T-state. The emulator calls this once per frame
+// so that key presses are timed in emulated time.
+func (s *State) Tick(cycles uint64) {
+	s.mu.Lock()
+	s.now = cycles
+	s.mu.Unlock()
 }
 
-// RowSelector returns the current row selector.
-func (s *State) RowSelector() uint8 {
-	return s.rowSelect
+// QuitRequested reports whether the user asked the emulator to stop. Raw mode
+// disables the terminal's signal handling, so Ctrl+C arrives as a byte rather
+// than as SIGINT and has to be turned into a shutdown request here.
+func (s *State) QuitRequested() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.quit
+}
+
+// StartInput reads the host keyboard on a dedicated goroutine.
+//
+// This must never be done from the CPU's I/O path: a terminal read blocks until
+// a key arrives, so polling stdin while emulating would stall the CPU for as
+// long as the user is idle. The goroutine exits on stdin error or EOF.
+func (s *State) StartInput() {
+	s.mu.Lock()
+	if s.started {
+		s.mu.Unlock()
+		return
+	}
+	s.started = true
+	s.mu.Unlock()
+
+	go func() {
+		var buf [32]byte
+		for {
+			n, err := os.Stdin.Read(buf[:])
+			if n > 0 {
+				s.mu.Lock()
+				for i := 0; i < n; i++ {
+					s.translateKeyLocked(buf[i])
+				}
+				s.mu.Unlock()
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
 }
 
 // addKey adds a key to the pressed set (deduplicates).
+// The caller must hold s.mu.
 func (s *State) addKey(key byte) {
+	// The matrix holds the key legends in upper case ('Z', 'X', CAPS SHIFT...), so a
+	// letter has to be folded before it is looked up. Adding a lower-case letter
+	// matches no key at all, which silently drops every letter and every SYMBOL
+	// SHIFT combination that is a letter (SYMBOL SHIFT + M for '.', and so on).
+	if key >= 'a' && key <= 'z' {
+		key -= 32
+	}
+
 	// Check if already pressed
 	for i := 0; i < s.count; i++ {
 		if s.pressed[i].key == key {
@@ -72,12 +128,13 @@ func (s *State) addKey(key byte) {
 		}
 	}
 	if s.count < maxPressedKeys {
-		s.pressed[s.count] = pressedKey{key: key, timestamp: time.Now()}
+		s.pressed[s.count] = pressedKey{key: key, pressCycle: s.now}
 		s.count++
 	}
 }
 
 // isPressed checks if a key is currently in the pressed set.
+// The caller must hold s.mu.
 func (s *State) isPressed(key byte) bool {
 	for i := 0; i < s.count; i++ {
 		if s.pressed[i].key == key {
@@ -87,12 +144,12 @@ func (s *State) isPressed(key byte) bool {
 	return false
 }
 
-// expireKeys removes keys that have been held longer than keyHoldTime.
+// expireKeys releases keys that have been held for keyHoldCycles T-states.
+// The caller must hold s.mu.
 func (s *State) expireKeys() {
-	now := time.Now()
 	j := 0
 	for i := 0; i < s.count; i++ {
-		if now.Sub(s.pressed[i].timestamp) < keyHoldTime {
+		if s.now-s.pressed[i].pressCycle < keyHoldCycles {
 			s.pressed[j] = s.pressed[i]
 			j++
 		}
@@ -102,8 +159,13 @@ func (s *State) expireKeys() {
 
 // TranslateKey converts a host character into Spectrum key injection.
 // Handles uppercase (CAPS SHIFT + letter), special chars (SYMBOL SHIFT), etc.
-func (s *State) TranslateKey(ch byte) {
+// The caller must hold s.mu.
+func (s *State) translateKeyLocked(ch byte) {
 	switch {
+	// Ctrl+C asks the emulator to stop.
+	case ch == 0x03:
+		s.quit = true
+
 	// Tab → CAPS SHIFT + SYMBOL SHIFT (Extended Mode)
 	case ch == '\t' || ch == 0x09:
 		s.addKey(KeyCapsShift)
@@ -114,10 +176,14 @@ func (s *State) TranslateKey(ch byte) {
 		s.addKey(KeyCapsShift)
 		s.addKey('0')
 
-	// Uppercase letters → CAPS SHIFT + lowercase
+	// Uppercase letters → CAPS SHIFT + letter
 	case ch >= 'A' && ch <= 'Z':
 		s.addKey(KeyCapsShift)
-		s.addKey(ch + 32) // lowercase
+		s.addKey(ch)
+
+	// Lowercase letters → the letter on its own
+	case ch >= 'a' && ch <= 'z':
+		s.addKey(ch)
 
 	// Special characters requiring SYMBOL SHIFT
 	case ch == ',':
@@ -217,26 +283,14 @@ func (s *State) TranslateKey(ch byte) {
 	}
 }
 
-// PollStdin reads any pending input from stdin (non-blocking) and translates to Spectrum keys.
-func (s *State) PollStdin() {
-	// Read available bytes from stdin (non-blocking because terminal is in raw mode)
-	var buf [32]byte
-	for {
-		n, err := os.Stdin.Read(buf[:])
-		if err != nil || n == 0 {
-			break
-		}
-		for i := 0; i < n; i++ {
-			s.TranslateKey(buf[i])
-		}
-	}
-}
-
 // ReadPort reads from a keyboard port. The port's upper byte contains the row selector.
 // Returns the column state: 0 = key pressed, 1 = released. Bits 5-7 always 1.
+// It performs no host I/O, so it is safe to call from the emulation loop.
 func (s *State) ReadPort(port uint16) uint8 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.expireKeys()
-	s.PollStdin()
 
 	rowSel := byte(port >> 8)
 	result := uint8(0xFF) // all bits 1 = no key pressed
@@ -254,7 +308,16 @@ func (s *State) ReadPort(port uint16) uint8 {
 	return result
 }
 
+// TranslateKey converts a host character into Spectrum key injection.
+// Handles uppercase (CAPS SHIFT + letter), special chars (SYMBOL SHIFT), etc.
+func (s *State) TranslateKey(ch byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.translateKeyLocked(ch)
+}
+
 // InjectKey injects a key press programmatically (for testing/scripting).
+// Raw matrix codes pass through unchanged; host characters are translated.
 func (s *State) InjectKey(ch byte) {
-	s.addKey(ch)
+	s.TranslateKey(ch)
 }

@@ -18,9 +18,9 @@ const headerSize = 2
 
 // File wraps a TAP file for sequential block reading.
 type File struct {
-	f     *os.File
-	size  int64
-	pos   int64
+	f    *os.File
+	size int64
+	pos  int64
 }
 
 // Open opens a TAP file for reading.
@@ -128,18 +128,18 @@ type Player struct {
 	tapFile *File
 
 	// Current block
-	blockData  []uint8
-	blockLen   int
-	blockIdx   int // which block we're on
-	bitPos     int // bit position within current byte (0-7, MSB first)
+	blockData []uint8
+	blockLen  int
+	blockIdx  int // which block we're on
+	bitPos    int // bit position within current byte (0-7, MSB first)
 
 	// State machine
-	state       State
-	pulseCount  int // remaining pulses in current phase
-	pulsePhase  int // 0 or 1 within a data bit
-	earLevel    int // current EAR level (0 or 1)
-	cycleCount  int // T-states since last edge
-	lastEdgeAt  int // T-state count of last edge
+	state      State
+	pulseCount int // remaining pulses in current phase
+	pulsePhase int // 0 or 1 within a data bit
+	earLevel   int // current EAR level (0 or 1)
+	cycleCount int // T-states since last edge
+	lastEdgeAt int // T-state count of last edge
 
 	// Config
 	pilotLen int // pilot pulse count for current block
