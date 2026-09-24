@@ -9,15 +9,15 @@ import "sync"
 // ---------------------------------------------------------------------------
 
 const (
-	ClockFreq  = 3_500_000 // 3.5 MHz Z80 clock
-	MaxMemory  = 65536     // 64 KB address space
-	IOPorts    = 256       // Number of I/O ports
+	ClockFreq = 3_500_000 // 3.5 MHz Z80 clock
+	MaxMemory = 65536     // 64 KB address space
+	IOPorts   = 256       // Number of I/O ports
 )
 
 // Spectrum frame timing
 const (
-	FrameCycles   = 70908 // T-states per 50Hz frame
-	IntPulseCycles = 32   // How long INT stays asserted
+	FrameCycles    = 70908 // T-states per 50Hz frame
+	IntPulseCycles = 32    // How long INT stays asserted
 )
 
 // ---------------------------------------------------------------------------
@@ -43,10 +43,10 @@ const (
 // index registers, and interrupt state.
 type Registers struct {
 	// Main register set
-	A, F   uint8
-	B, C   uint8
-	D, E   uint8
-	H, L   uint8
+	A, F     uint8
+	B, C     uint8
+	D, E     uint8
+	H, L     uint8
 	IXh, IXl uint8
 	IYh, IYl uint8
 
@@ -66,57 +66,74 @@ type Registers struct {
 	WZ uint16
 
 	// Interrupt state
-	IFF1 bool    // Interrupt flip-flop 1 (actual enable)
-	IFF2 bool    // Interrupt flip-flop 2 (temporary save during NMI)
-	IM   uint8   // Interrupt mode (0, 1, or 2)
-	IFFDelay int  // EI delay counter (EI takes effect after next instruction)
+	IFF1     bool  // Interrupt flip-flop 1 (actual enable)
+	IFF2     bool  // Interrupt flip-flop 2 (temporary save during NMI)
+	IM       uint8 // Interrupt mode (0, 1, or 2)
+	IFFDelay int   // EI delay counter (EI takes effect after next instruction)
 
 	// Halted flag
 	Halted bool
 }
 
 // AF returns the 16-bit AF register pair value.
-func (r *Registers) AF() uint16  { return (uint16(r.A) << 8) | uint16(r.F) }
+func (r *Registers) AF() uint16 { return (uint16(r.A) << 8) | uint16(r.F) }
+
 // BC returns the 16-bit BC register pair value.
-func (r *Registers) BC() uint16  { return (uint16(r.B) << 8) | uint16(r.C) }
+func (r *Registers) BC() uint16 { return (uint16(r.B) << 8) | uint16(r.C) }
+
 // DE returns the 16-bit DE register pair value.
-func (r *Registers) DE() uint16  { return (uint16(r.D) << 8) | uint16(r.E) }
+func (r *Registers) DE() uint16 { return (uint16(r.D) << 8) | uint16(r.E) }
+
 // HL returns the 16-bit HL register pair value.
-func (r *Registers) HL() uint16  { return (uint16(r.H) << 8) | uint16(r.L) }
+func (r *Registers) HL() uint16 { return (uint16(r.H) << 8) | uint16(r.L) }
+
 // IX returns the 16-bit IX index register value.
-func (r *Registers) IX() uint16  { return (uint16(r.IXh) << 8) | uint16(r.IXl) }
+func (r *Registers) IX() uint16 { return (uint16(r.IXh) << 8) | uint16(r.IXl) }
+
 // IY returns the 16-bit IY index register value.
-func (r *Registers) IY() uint16  { return (uint16(r.IYh) << 8) | uint16(r.IYl) }
+func (r *Registers) IY() uint16 { return (uint16(r.IYh) << 8) | uint16(r.IYl) }
 
 // SetAF sets the 16-bit AF register pair.
 func (r *Registers) SetAF(v uint16) { r.A = uint8(v >> 8); r.F = uint8(v & 0xFF) }
+
 // SetBC sets the 16-bit BC register pair.
 func (r *Registers) SetBC(v uint16) { r.B = uint8(v >> 8); r.C = uint8(v & 0xFF) }
+
 // SetDE sets the 16-bit DE register pair.
 func (r *Registers) SetDE(v uint16) { r.D = uint8(v >> 8); r.E = uint8(v & 0xFF) }
+
 // SetHL sets the 16-bit HL register pair.
 func (r *Registers) SetHL(v uint16) { r.H = uint8(v >> 8); r.L = uint8(v & 0xFF) }
+
 // SetIX sets the 16-bit IX index register.
 func (r *Registers) SetIX(v uint16) { r.IXh = uint8(v >> 8); r.IXl = uint8(v & 0xFF) }
+
 // SetIY sets the 16-bit IY index register.
 func (r *Registers) SetIY(v uint16) { r.IYh = uint8(v >> 8); r.IYl = uint8(v & 0xFF) }
 
 // SetAF1 sets the alternate 16-bit AF register pair.
 func (r *Registers) AF1Val() uint16 { return (uint16(r.A1) << 8) | uint16(r.F1) }
+
 // SetAF1 sets the alternate AF pair.
 func (r *Registers) SetAF1(v uint16) { r.A1 = uint8(v >> 8); r.F1 = uint8(v & 0xFF) }
+
 // BC1 returns the alternate BC pair.
-func (r *Registers) BC1Val() uint16  { return (uint16(r.B1) << 8) | uint16(r.C1) }
+func (r *Registers) BC1Val() uint16 { return (uint16(r.B1) << 8) | uint16(r.C1) }
+
 // SetBC1 sets the alternate BC pair.
-func (r *Registers) SetBC1(v uint16)  { r.B1 = uint8(v >> 8); r.C1 = uint8(v & 0xFF) }
+func (r *Registers) SetBC1(v uint16) { r.B1 = uint8(v >> 8); r.C1 = uint8(v & 0xFF) }
+
 // DE1 returns the alternate DE pair.
-func (r *Registers) DE1Val() uint16  { return (uint16(r.D1) << 8) | uint16(r.E1) }
+func (r *Registers) DE1Val() uint16 { return (uint16(r.D1) << 8) | uint16(r.E1) }
+
 // SetDE1 sets the alternate DE pair.
-func (r *Registers) SetDE1(v uint16)  { r.D1 = uint8(v >> 8); r.E1 = uint8(v & 0xFF) }
+func (r *Registers) SetDE1(v uint16) { r.D1 = uint8(v >> 8); r.E1 = uint8(v & 0xFF) }
+
 // HL1 returns the alternate HL pair.
-func (r *Registers) HL1Val() uint16  { return (uint16(r.H1) << 8) | uint16(r.L1) }
+func (r *Registers) HL1Val() uint16 { return (uint16(r.H1) << 8) | uint16(r.L1) }
+
 // SetHL1 sets the alternate HL pair.
-func (r *Registers) SetHL1(v uint16)  { r.H1 = uint8(v >> 8); r.L1 = uint8(v & 0xFF) }
+func (r *Registers) SetHL1(v uint16) { r.H1 = uint8(v >> 8); r.L1 = uint8(v & 0xFF) }
 
 // ---------------------------------------------------------------------------
 // Memory and I/O interfaces
@@ -149,8 +166,8 @@ type CPU struct {
 	Regs Registers
 
 	// Memory and I/O
-	Mem  MemoryHandler
-	IO   IOHandler
+	Mem MemoryHandler
+	IO  IOHandler
 
 	// Per-port I/O handlers (for port-specific keyboard/tape handling)
 	PortHandlers [IOPorts]PortHandler
@@ -222,4 +239,3 @@ func (r *Registers) IFFDelayActive() bool {
 
 // Step executes one instruction. Returns the number of T-states consumed.
 // Full implementation in instructions.go.
-
