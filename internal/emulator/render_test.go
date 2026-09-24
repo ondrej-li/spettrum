@@ -200,6 +200,62 @@ func TestOCRFrameFitsTerminal(t *testing.T) {
 	}
 }
 
+// TestBootsRealROMInBrailleMode runs the ROM through the braille renderer. The
+// braille grid is the biggest of the three, so this also pins that asking for
+// braille actually gets braille: it shares the zero value of the mode enum with
+// "unset", and an earlier version resolved that to the OCR display, silently
+// ignoring --render-mode braille.
+func TestBootsRealROMInBrailleMode(t *testing.T) {
+	if _, err := os.Stat(realROMPath); err != nil {
+		t.Skipf("ROM image not available at %s: %v", realROMPath, err)
+	}
+
+	var out bytes.Buffer
+	emu := New(Config{
+		ROMFile:      realROMPath,
+		RenderMode:   ula.RenderBraille,
+		Output:       &out,
+		NoTerminal:   true,
+		Unpaced:      true,
+		Audio:        false,
+		Instructions: 3_000_000,
+	})
+	if err := emu.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer emu.Close()
+	if err := emu.Run(); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if got := emu.display.RenderMode; got != ula.RenderBraille {
+		t.Fatalf("the display is in %s mode, want braille", got)
+	}
+
+	// Braille draws the full pixel grid, so the frame has to be as wide as the
+	// braille grid and contain braille cells rather than the RAM's text.
+	frame := lastFrame(out.String())
+	widest, braille := 0, false
+	for _, line := range frame {
+		if n := utf8.RuneCountInString(line); n > widest {
+			widest = n
+		}
+		for _, r := range line {
+			if r >= 0x2800 && r <= 0x28FF {
+				braille = true
+			}
+		}
+	}
+	if widest < ula.BrailleOutputWidth {
+		t.Errorf("the widest braille line is %d cells, want at least %d",
+			widest, ula.BrailleOutputWidth)
+	}
+	if !braille {
+		t.Errorf("the frame holds no braille cells; first lines:\n%s",
+			strings.Join(frame[:min(4, len(frame))], "\n"))
+	}
+}
+
 // TestBootsRealROMInBlockMode runs the same ROM through the block renderer as a
 // smoke test for the other render path.
 func TestBootsRealROMInBlockMode(t *testing.T) {

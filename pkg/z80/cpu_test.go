@@ -947,6 +947,40 @@ func TestEXAF(t *testing.T) {
 	}
 }
 
+func TestAccumulatorRotatesOnlyMoveTheCarry(t *testing.T) {
+	// The accumulator rotates are not the CB-prefixed ones: the sign, zero and
+	// parity flags keep their values. The ROM's tape loader saves a decision in
+	// Z and reads it back after an RRA, so getting this wrong makes loading fail.
+	cases := []struct {
+		name   string
+		opcode byte
+		a, f   byte
+		wantA  byte
+		wantF  byte
+	}{
+		{"RRA keeps Z and sets the carry", 0x1F, 0x01, FlagZ, 0x00, FlagZ | FlagC},
+		{"RRA rotates the carry in and keeps Z", 0x1F, 0x00, FlagZ | FlagC | FlagH | FlagN, 0x80, FlagZ},
+		{"RLCA keeps Z and the sign", 0x07, 0x80, FlagZ | FlagS, 0x01, FlagZ | FlagS | FlagC},
+		{"RRCA keeps the parity and the sign", 0x0F, 0x03, FlagP | FlagS, 0x81, FlagP | FlagS | FlagC},
+		{"RLA rotates the carry in and clears H and N", 0x17, 0x00, FlagC | FlagH | FlagN, 0x01, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cpu, mem, _ := newTestCPU()
+			cpu.Regs.A = tc.a
+			cpu.Regs.F = tc.f
+			loadOpcodes(cpu, mem, tc.opcode)
+			cpu.Step()
+			if cpu.Regs.A != tc.wantA {
+				t.Errorf("A is %#02x, want %#02x", cpu.Regs.A, tc.wantA)
+			}
+			if cpu.Regs.F != tc.wantF {
+				t.Errorf("F is %#02x, want %#02x", cpu.Regs.F, tc.wantF)
+			}
+		})
+	}
+}
+
 func TestRetZ(t *testing.T) {
 	cpu, mem, _ := newTestCPU()
 	cpu.Regs.SP = 0xFF00

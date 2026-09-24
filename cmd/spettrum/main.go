@@ -33,7 +33,7 @@ func main() {
 	audioRate := flag.Int("audio-rate", beeper.DefaultSampleRate, "Audio sample rate in Hz")
 	audioLatency := flag.Int("audio-latency", int(beeper.DefaultLatency/time.Millisecond), "Audio buffer length in milliseconds")
 	audioSelfTest := flag.Bool("audio-selftest", false, "Play a test tone and exit")
-	quickLoad := flag.Bool("quick-load", true, "Fast tape loading")
+	quickLoad := flag.Bool("quick-load", true, "Wind the tape past at full speed instead of playing it in real time")
 	headless := flag.Bool("headless", false, "Run without a terminal or renderer (for tests/scripts)")
 	noTerminal := flag.Bool("no-terminal", false, "Render frames without raw mode/alt screen (for pipes and logs)")
 	turbo := flag.Bool("turbo", false, "Run unpaced, as fast as the host allows")

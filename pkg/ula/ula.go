@@ -61,7 +61,11 @@ func (m RenderMode) String() string {
 }
 
 const (
-	RenderBraille RenderMode = iota
+	// RenderModeUnset is the zero value: nothing was chosen, and the emulator
+	// resolves it to the OCR display. It has to exist, or choosing braille would
+	// be indistinguishable from not choosing anything and would be overridden.
+	RenderModeUnset RenderMode = iota
+	RenderBraille
 	RenderBlock
 	RenderOCR
 )
