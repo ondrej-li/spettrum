@@ -23,6 +23,7 @@ func main() {
 	romFile := flag.String("rom", "", "Load ROM from file (default: embedded 48K ROM)")
 	snapshotFile := flag.String("snapshot", "", "Load .z80 snapshot file")
 	tapFile := flag.String("tap", "", "Load .tap cassette file")
+	tzxFile := flag.String("tzx", "", "Load .tzx cassette file")
 	instructions := flag.Int("instructions", 0, "Instructions to run (0=unlimited)")
 	disasmFile := flag.String("disassemble", "", "Write disassembly output to file")
 	renderMode := flag.String("render-mode", "ocr", "Rendering mode: block, braille, ocr")
@@ -71,6 +72,7 @@ func main() {
 		ROMFile:      *romFile,
 		SnapshotFile: *snapshotFile,
 		TAPFile:      *tapFile,
+		TZXFile:      *tzxFile,
 		Instructions: *instructions,
 		DisasmFile:   *disasmFile,
 		RenderMode:   mode,
