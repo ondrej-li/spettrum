@@ -43,6 +43,16 @@ const (
 
 	OCROutputWidth  = ScreenWidth / 8  // 32
 	OCROutputHeight = ScreenHeight / 8 // 24
+
+	// blinkFrames is how long one half of a flash cycle lasts. The Spectrum
+	// flashes at 1.6Hz, and sixteen frames of 50Hz is half a cycle.
+	blinkFrames = 16
+
+	// selfHealFrames is how often delta rendering is interrupted by a whole
+	// frame. A delta is only correct while the renderer and the terminal agree
+	// on what is on the screen, and there is no way to ask; repainting
+	// occasionally bounds how long any disagreement can survive.
+	selfHealFrames = 250
 )
 
 // RenderMode selects the terminal rendering style.
@@ -216,6 +226,26 @@ type State struct {
 	// terminal, in which case frames are emitted at their natural size.
 	termCols int
 	termRows int
+
+	// Incremental rendering. shadow is VRAM as it was last painted and dirty
+	// marks the cells that differ from it; only those are repainted, which is
+	// what keeps a still picture from being pushed to the terminal fifty times a
+	// second. The prev* fields describe the frame the shadow belongs to, since a
+	// delta is only valid while the picture is still being drawn in the same
+	// place, in the same mode, after the same border.
+	shadow     []uint8
+	dirty      []bool
+	havePrev   bool
+	prevMode   RenderMode
+	prevCols   int
+	prevRows   int
+	prevBorder uint8
+	prevBlink  bool
+	sinceFull  int
+
+	// incremental selects delta rendering. It only applies when the output is a
+	// terminal: a pipe or a file is given whole frames whatever it says.
+	incremental bool
 }
 
 // SetTerminalSize overrides the size frames are fitted to. Passing zeroes means
@@ -248,9 +278,22 @@ func TerminalSize() (cols, rows int, ok bool) {
 // New creates a new ULA state bound to the given VRAM buffer.
 func New(vram []uint8, mode RenderMode) *State {
 	return &State{
-		VRAM:       vram,
-		RenderMode: mode,
+		VRAM:        vram,
+		RenderMode:  mode,
+		shadow:      make([]uint8, TotalVRAM),
+		dirty:       make([]bool, OutputWidth*OutputHeight),
+		incremental: true,
 	}
+}
+
+// SetIncremental turns delta rendering on or off. Off sends the whole picture
+// every frame, which is the renderer as it was before deltas existed; it is the
+// escape hatch for a terminal that does not take the cursor moves well, and what
+// --full-refresh asks for.
+func (s *State) SetIncremental(on bool) {
+	s.mu.Lock()
+	s.incremental = on
+	s.mu.Unlock()
 }
 
 // SetBorderColor sets the border color (0-7).
@@ -341,97 +384,96 @@ func ansiColor(spectrum uint8, bright uint8, isForeground bool) int {
 	return base + c
 }
 
+// cellRenderer draws one cell of the body and returns the character to put there
+// with the ANSI foreground and background colours to put it in.
+//
+// Both the whole-frame path and the delta path go through it, so a cell cannot
+// come out differently depending on which one drew it.
+type cellRenderer func(*State, int, int) (string, int, int)
+
+// blinkPhase reports which half of the flash cycle a frame falls in. A flashing
+// cell shows its ink and paper the other way round for one half of the cycle.
+func (s *State) blinkPhase() bool {
+	return (s.FrameCounter/blinkFrames)&1 == 0
+}
+
+// cellColours reads the attribute covering the pixel at (px, py) and returns the
+// colours its cell is to be drawn in, with a flashing cell's ink and paper
+// swapped in the half of the cycle where it is inverted.
+func (s *State) cellColours(px, py int) (attr ColorAttr, ink, paper uint8) {
+	attr = getAttr(s.VRAM, px, py)
+	ink, paper = attr.Ink, attr.Paper
+	if attr.Blink != 0 && !s.blinkPhase() {
+		ink, paper = paper, ink
+	}
+	return attr, ink, paper
+}
+
 // ---------------------------------------------------------------------------
 // Block mode rendering (2x2 → Unicode quadrant)
 // ---------------------------------------------------------------------------
 
-// writeBlockRow appends one row of the 2x2 block rendering to buf.
-func writeBlockRow(s *State, row, maxCols int, buf *[]byte) {
-	vram := s.VRAM
-	blinkPhase := (s.FrameCounter/16)&1 == 0
-	last := uint32(noColour)
+// renderBlockCell returns the cell of the 2x2 block display at (row, col): the
+// four pixels at (2*col, 2*row) as one quadrant character.
+func renderBlockCell(s *State, row, col int) (string, int, int) {
+	px := col * 2
+	py := row * 2
 
-	for col := 0; col < OutputWidth && col < maxCols; col++ {
-		px := col * 2
-		py := row * 2
+	tl := getPixel(s.VRAM, px, py)
+	tr := getPixel(s.VRAM, px+1, py)
+	bl := getPixel(s.VRAM, px, py+1)
+	br := getPixel(s.VRAM, px+1, py+1)
 
-		tl := getPixel(vram, px, py)
-		tr := getPixel(vram, px+1, py)
-		bl := getPixel(vram, px, py+1)
-		br := getPixel(vram, px+1, py+1)
-
-		pattern := (tl << 3) | (tr << 2) | (bl << 1) | br
-		ch := blockChars[pattern]
-
-		attr := getAttr(vram, px, py)
-		ink := attr.Ink
-		paper := attr.Paper
-		if attr.Blink != 0 && !blinkPhase {
-			ink, paper = paper, ink
-		}
-
-		*buf = appendCell(*buf, &last,
-			ansiColor(ink, attr.Bright, true), ansiColor(paper, 0, false), ch)
-	}
+	pattern := (tl << 3) | (tr << 2) | (bl << 1) | br
+	attr, ink, paper := s.cellColours(px, py)
+	return blockChars[pattern], ansiColor(ink, attr.Bright, true), ansiColor(paper, 0, false)
 }
 
 // ---------------------------------------------------------------------------
 // Braille mode rendering (2x4 → Unicode Braille)
 // ---------------------------------------------------------------------------
 
-// writeBrailleRow appends one row of the 2x4 braille rendering to buf.
-func writeBrailleRow(s *State, row, maxCols int, buf *[]byte) {
+// renderBrailleCell returns the cell of the 2x4 braille display at (row, col):
+// the eight pixels at (2*col, 4*row) as one braille character.
+func renderBrailleCell(s *State, row, col int) (string, int, int) {
 	vram := s.VRAM
-	blinkPhase := (s.FrameCounter/16)&1 == 0
-	last := uint32(noColour)
+	px := col * 2
+	py := row * 4
 
-	for col := 0; col < BrailleOutputWidth && col < maxCols; col++ {
-		px := col * 2
-		py := row * 4
-
-		// Read 8 pixels: 2 cols × 4 rows
-		var pattern uint16
-		// Left column: dots 0,1,2,6
-		if getPixel(vram, px, py) != 0 {
-			pattern |= 1 << 0
-		}
-		if getPixel(vram, px, py+1) != 0 {
-			pattern |= 1 << 1
-		}
-		if getPixel(vram, px, py+2) != 0 {
-			pattern |= 1 << 2
-		}
-		if getPixel(vram, px+1, py) != 0 {
-			pattern |= 1 << 3
-		}
-		if getPixel(vram, px+1, py+1) != 0 {
-			pattern |= 1 << 4
-		}
-		if getPixel(vram, px+1, py+2) != 0 {
-			pattern |= 1 << 5
-		}
-		if getPixel(vram, px, py+3) != 0 {
-			pattern |= 1 << 6
-		}
-		if getPixel(vram, px+1, py+3) != 0 {
-			pattern |= 1 << 7
-		}
-
-		// UTF-8 encoding of U+2800 + pattern
-		cp := 0x2800 + pattern
-		braille := []byte{0xE2, 0xA0 | byte(cp>>6), 0x80 | byte(cp&0x3F)}
-
-		attr := getAttr(vram, px, py)
-		ink := attr.Ink
-		paper := attr.Paper
-		if attr.Blink != 0 && !blinkPhase {
-			ink, paper = paper, ink
-		}
-
-		fg := ansiColor(ink, attr.Bright, true)
-		bg := ansiColor(paper, 0, false)
-		*buf = appendCell(*buf, &last, fg, bg, string(braille))
+	// Read 8 pixels: 2 cols × 4 rows
+	var pattern uint16
+	// Left column: dots 0,1,2,6
+	if getPixel(vram, px, py) != 0 {
+		pattern |= 1 << 0
 	}
+	if getPixel(vram, px, py+1) != 0 {
+		pattern |= 1 << 1
+	}
+	if getPixel(vram, px, py+2) != 0 {
+		pattern |= 1 << 2
+	}
+	if getPixel(vram, px+1, py) != 0 {
+		pattern |= 1 << 3
+	}
+	if getPixel(vram, px+1, py+1) != 0 {
+		pattern |= 1 << 4
+	}
+	if getPixel(vram, px+1, py+2) != 0 {
+		pattern |= 1 << 5
+	}
+	if getPixel(vram, px, py+3) != 0 {
+		pattern |= 1 << 6
+	}
+	if getPixel(vram, px+1, py+3) != 0 {
+		pattern |= 1 << 7
+	}
+
+	// UTF-8 encoding of U+2800 + pattern
+	cp := 0x2800 + pattern
+	braille := []byte{0xE2, 0xA0 | byte(cp>>6), 0x80 | byte(cp&0x3F)}
+
+	attr, ink, paper := s.cellColours(px, py)
+	return string(braille), ansiColor(ink, attr.Bright, true), ansiColor(paper, 0, false)
 }
 
 // ---------------------------------------------------------------------------
@@ -447,80 +489,68 @@ func hammingDistance(a, b [8]uint8) int {
 	return d
 }
 
-// writeOCRRow appends one row of the 8x8 font-matched rendering to buf.
-func writeOCRRow(s *State, row, maxCols int, buf *[]byte) {
+// renderOCRCell returns the cell of the 8x8 display at (row, col): the character
+// of the ROM's font that the cell's bitmap matches most closely.
+func renderOCRCell(s *State, row, col int) (string, int, int) {
 	vram := s.VRAM
-	blinkPhase := (s.FrameCounter/16)&1 == 0
-	last := uint32(noColour)
+	px := col * 8
+	py := row * 8
 
-	for col := 0; col < OCROutputWidth && col < maxCols; col++ {
-		px := col * 8
-		py := row * 8
-
-		// Read 8x8 bitmap
-		var bitmap [8]uint8
-		for i := 0; i < 8; i++ {
-			for j := 0; j < 8; j++ {
-				if getPixel(vram, px+j, py+i) != 0 {
-					bitmap[i] |= 1 << (7 - j)
-				}
+	// Read 8x8 bitmap
+	var bitmap [8]uint8
+	for i := 0; i < 8; i++ {
+		for j := 0; j < 8; j++ {
+			if getPixel(vram, px+j, py+i) != 0 {
+				bitmap[i] |= 1 << (7 - j)
 			}
 		}
-
-		// Match against font
-		bestDist := 999
-		bestChar := byte(' ')
-		for c := 0; c < 96; c++ {
-			d := hammingDistance(bitmap, sinclairFont[c])
-			if d < bestDist {
-				bestDist = d
-				bestChar = byte(c + 32)
-			}
-		}
-
-		// If too many bits differ (>12), treat as space
-		if bestDist > 12 {
-			bestChar = ' '
-		}
-
-		// Handle non-standard characters
-		var out string
-		switch bestChar {
-		case 96:
-			out = "£"
-		case 127:
-			out = "©"
-		default:
-			out = string(bestChar)
-		}
-
-		attr := getAttr(vram, px, py)
-		ink := attr.Ink
-		paper := attr.Paper
-		if attr.Blink != 0 && !blinkPhase {
-			ink, paper = paper, ink
-		}
-
-		fg := ansiColor(ink, attr.Bright, true)
-		bg := ansiColor(paper, 0, false)
-		*buf = appendCell(*buf, &last, fg, bg, out)
 	}
+
+	// Match against font
+	bestDist := 999
+	bestChar := byte(' ')
+	for c := 0; c < 96; c++ {
+		d := hammingDistance(bitmap, sinclairFont[c])
+		if d < bestDist {
+			bestDist = d
+			bestChar = byte(c + 32)
+		}
+	}
+
+	// If too many bits differ (>12), treat as space
+	if bestDist > 12 {
+		bestChar = ' '
+	}
+
+	// Handle non-standard characters
+	var out string
+	switch bestChar {
+	case 96:
+		out = "£"
+	case 127:
+		out = "©"
+	default:
+		out = string(bestChar)
+	}
+
+	attr, ink, paper := s.cellColours(px, py)
+	return out, ansiColor(ink, attr.Bright, true), ansiColor(paper, 0, false)
 }
 
 // ---------------------------------------------------------------------------
 // Frame rendering
 // ---------------------------------------------------------------------------
 
-// bodyWriter returns the display size in characters and the per-row writer for
+// bodyWriter returns the display size in characters and the per-cell renderer for
 // the current render mode.
-func (s *State) bodyWriter() (w, h int, writeRow func(*State, int, int, *[]byte)) {
+func (s *State) bodyWriter() (w, h int, render cellRenderer) {
 	switch s.RenderMode {
 	case RenderBlock:
-		return OutputWidth, OutputHeight, writeBlockRow
+		return OutputWidth, OutputHeight, renderBlockCell
 	case RenderBraille:
-		return BrailleOutputWidth, BrailleOutputHeight, writeBrailleRow
+		return BrailleOutputWidth, BrailleOutputHeight, renderBrailleCell
 	default:
-		return OCROutputWidth, OCROutputHeight, writeOCRRow
+		return OCROutputWidth, OCROutputHeight, renderOCRCell
 	}
 }
 
@@ -534,20 +564,41 @@ func (s *State) terminalSize() (cols, rows int, ok bool) {
 	return 0, 0, false
 }
 
-// RenderFrame builds the full terminal frame buffer based on current VRAM state.
-// Returns the rendered string.
+// frameGeometry is the shape of one frame: the first row of the body that is
+// shown, and how much of the body fits in the window.
+type frameGeometry struct {
+	bodyW        int
+	firstBodyRow int
+	bodyRows     int
+	maxCols      int
+	borderRows   int
+	onTerminal   bool
+}
+
+// RenderFrame renders what the terminal has to be sent to show the current VRAM,
+// and returns it as the string to write out.
 //
 // When the output is a terminal the frame is fitted to it: the border is dropped
 // unless the whole body plus borders fits, and the image is clipped to the window.
 // A frame taller than the terminal (or a row wider than it) would wrap or scroll,
 // and scrolling smears successive frames into each other so the picture appears to
-// crawl diagonally. When the output is not a terminal the frame is emitted at its
-// natural size so that captured frames stay self-contained.
+// crawl diagonally.
+//
+// On a terminal a frame that differs from the last one in only a few cells is
+// sent as those cells alone, each addressed with a cursor move, and a frame that
+// differs in nothing is sent as nothing at all. That is what takes the renderer
+// off the critical path: a still picture - an idle machine at its prompt, a
+// program waiting for a key - costs one comparison per cell instead of a screen
+// full of text, and no terminal bandwidth at all.
+//
+// When the output is not a terminal the frame is emitted at its natural size and
+// always whole, so that captured frames stay self-contained: a stream of deltas
+// cannot be read back without a screen to apply them to.
 func (s *State) RenderFrame() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	bodyW, bodyH, writeRow := s.bodyWriter()
+	bodyW, bodyH, render := s.bodyWriter()
 
 	cols, rows, onTerminal := s.terminalSize()
 	borderRows := 1
@@ -569,18 +620,69 @@ func (s *State) RenderFrame() string {
 			bodyRows = 1
 		}
 	}
-	firstBodyRow := bodyH - bodyRows
 
 	maxCols := bodyW
 	if onTerminal && cols < maxCols {
 		maxCols = cols
 	}
 
-	totalRows := 2*borderRows + bodyRows
-	borderANSI := fmt.Sprintf("\033[%dm", 40+ansiColor(s.border, 0, false))
+	g := frameGeometry{
+		bodyW:        bodyW,
+		firstBodyRow: bodyH - bodyRows,
+		bodyRows:     bodyRows,
+		maxCols:      maxCols,
+		borderRows:   borderRows,
+		onTerminal:   onTerminal,
+	}
+
+	blink := s.blinkPhase()
+
+	// A delta is only valid while the last frame is still where it was put: the
+	// same mode, the same window, the same border. A resize, a mode change, the
+	// first frame, the periodic self-heal and --full-refresh all repaint whole.
+	sameWindow := s.RenderMode == s.prevMode && cols == s.prevCols && rows == s.prevRows
+	delta := s.incremental && onTerminal && s.havePrev && sameWindow &&
+		s.sinceFull < selfHealFrames
 
 	var buf []byte
+	if delta {
+		buf = s.appendDelta(buf, g, blink, render)
+		if len(buf) > 0 {
+			// The colours are left as the last cell asked for; put the terminal
+			// back to its own so that nothing printed later inherits them.
+			buf = append(buf, "\033[0m"...)
+		}
+	} else {
+		// Drawing a window the last picture was not drawn in - a resize, or a
+		// change of render mode - means clearing what the old frame left behind.
+		buf = s.appendWholeFrame(buf, g, s.havePrev && !sameWindow, render)
+		s.syncShadow()
+	}
+
+	s.prevMode, s.prevCols, s.prevRows = s.RenderMode, cols, rows
+	s.prevBorder, s.prevBlink = s.border, blink
+	s.havePrev = true
+	if delta {
+		s.sinceFull++
+	} else {
+		s.sinceFull = 0
+	}
+
+	s.FrameCounter++
+	return string(buf)
+}
+
+// appendWholeFrame draws every visible cell, in order, from the current VRAM.
+// When clear is set it starts by emptying the window, which is what a frame that
+// lands somewhere the last one did not needs.
+func (s *State) appendWholeFrame(buf []byte, g frameGeometry, clear bool, render cellRenderer) []byte {
+	totalRows := 2*g.borderRows + g.bodyRows
+	borderANSI := fmt.Sprintf("\033[%dm", 40+ansiColor(s.border, 0, false))
+
 	buf = append(buf, "\033[H"...) // cursor home
+	if g.onTerminal && clear {
+		buf = append(buf, "\033[2J"...)
+	}
 
 	// endRow erases whatever the frame no longer covers using the colour still in
 	// effect, resets the colours, and moves to the next row.
@@ -605,25 +707,186 @@ func (s *State) RenderFrame() string {
 	}
 	borderRow := func() {
 		buf = append(buf, borderANSI...)
-		for j := 0; j < maxCols; j++ {
+		for j := 0; j < g.maxCols; j++ {
 			buf = append(buf, ' ')
 		}
 		endRow()
 	}
 
-	for i := 0; i < borderRows; i++ {
+	for i := 0; i < g.borderRows; i++ {
 		borderRow()
 	}
-	for i := 0; i < bodyRows; i++ {
-		writeRow(s, firstBodyRow+i, maxCols, &buf)
+	for i := 0; i < g.bodyRows; i++ {
+		row := g.firstBodyRow + i
+		last := uint32(noColour)
+		for col := 0; col < g.maxCols; col++ {
+			ch, fg, bg := render(s, row, col)
+			buf = appendCell(buf, &last, fg, bg, ch)
+		}
 		endRow()
 	}
-	for i := 0; i < borderRows; i++ {
+	for i := 0; i < g.borderRows; i++ {
 		borderRow()
 	}
+	return buf
+}
 
-	s.FrameCounter++
-	return string(buf)
+// appendDelta repaints only the cells that have changed since the last frame, and
+// draws nothing at all when none have.
+//
+// Every run of changed cells is addressed with an absolute cursor move, so a
+// delta never contains a newline: it cannot scroll the window however tall it is,
+// and it does not care that the terminal is in raw mode, where a bare LF moves
+// the cursor down without returning it to the first column.
+func (s *State) appendDelta(buf []byte, g frameGeometry, blink bool, render cellRenderer) []byte {
+	borderChanged := g.borderRows > 0 && s.border != s.prevBorder
+	if !s.markChangedCells(g, blink) && !borderChanged {
+		return buf
+	}
+
+	if borderChanged {
+		borderANSI := fmt.Sprintf("\033[%dm", 40+ansiColor(s.border, 0, false))
+		for r := 1; r <= g.borderRows; r++ {
+			buf = appendBorderRow(buf, r, g.maxCols, borderANSI)
+		}
+		for r := 1 + g.borderRows + g.bodyRows; r <= 2*g.borderRows+g.bodyRows; r++ {
+			buf = appendBorderRow(buf, r, g.maxCols, borderANSI)
+		}
+	}
+
+	for i := 0; i < g.bodyRows; i++ {
+		row := g.firstBodyRow + i
+		absRow := 1 + g.borderRows + i
+		base := row * g.bodyW
+		for col := 0; col < g.maxCols; {
+			if !s.dirty[base+col] {
+				col++
+				continue
+			}
+			start := col
+			for col < g.maxCols && s.dirty[base+col] {
+				col++
+			}
+			buf = appendCursorTo(buf, absRow, start+1)
+			last := uint32(noColour)
+			for c := start; c < col; c++ {
+				ch, fg, bg := render(s, row, c)
+				buf = appendCell(buf, &last, fg, bg, ch)
+			}
+		}
+	}
+	return buf
+}
+
+// markChangedCells marks every cell that differs from the one painted last time
+// and, when the flash phase has just turned, every cell that flashes. It reports
+// whether anything was marked.
+//
+// The comparison is per 8x8 attribute cell, which is the coarsest thing the three
+// render modes have in common: OCR draws one character for it, block mode four by
+// four and braille four across by two down. Marking the whole rectangle for one
+// changed byte is a few cells more than strictly needed and many fewer than the
+// screen, and it keeps the three modes on one path.
+func (s *State) markChangedCells(g frameGeometry, blink bool) bool {
+	clear(s.dirty)
+	marked := false
+	flashed := blink != s.prevBlink
+
+	for ar := 0; ar < AttrRows; ar++ {
+		for ac := 0; ac < AttrCols; ac++ {
+			if !s.cellChanged(ar, ac) && !(flashed && s.blinks(ar, ac)) {
+				continue
+			}
+			r0, r1, c0, c1 := s.attrCellRect(ar, ac)
+			for r := r0; r <= r1; r++ {
+				for c := c0; c <= c1; c++ {
+					s.dirty[r*g.bodyW+c] = true
+				}
+			}
+			marked = true
+		}
+	}
+	return marked
+}
+
+// cellChanged reports whether the 8x8 cell with attribute coordinates (ar, ac)
+// differs from the one that was painted, and records the current bytes in the
+// shadow so that the next frame compares against this one.
+//
+// A cell's bytes are its eight bitmap bytes - one per pixel row, spaced 256 apart
+// because of the way the display file is interleaved - and its attribute byte.
+func (s *State) cellChanged(ar, ac int) bool {
+	base := (ar/8)*2048 + (ar%8)*32 + ac
+	attrAddr := VRAMSize + ar*AttrCols + ac
+
+	changed := false
+	for i := 0; i < 8; i++ {
+		addr := base + i*256
+		if v := s.vramByte(addr); s.shadow[addr] != v {
+			s.shadow[addr] = v
+			changed = true
+		}
+	}
+	if v := s.vramByte(attrAddr); s.shadow[attrAddr] != v {
+		s.shadow[attrAddr] = v
+		changed = true
+	}
+	return changed
+}
+
+// attrCellRect returns the range of display cells the 8x8 pixels of attribute
+// cell (ar, ac) are drawn as in the current render mode.
+func (s *State) attrCellRect(ar, ac int) (r0, r1, c0, c1 int) {
+	switch s.RenderMode {
+	case RenderBlock:
+		return ar * 4, ar*4 + 3, ac * 4, ac*4 + 3
+	case RenderBraille:
+		return ar * 2, ar*2 + 1, ac * 4, ac*4 + 3
+	default:
+		return ar, ar, ac, ac
+	}
+}
+
+// vramByte reads a byte of the display file, treating anything past the end of
+// the buffer as blank - which is what the pixel reader does with it too.
+func (s *State) vramByte(addr int) uint8 {
+	if addr < 0 || addr >= len(s.VRAM) {
+		return 0
+	}
+	return s.VRAM[addr]
+}
+
+// blinks reports whether the attribute of cell (ar, ac) asks for flashing.
+func (s *State) blinks(ar, ac int) bool {
+	return s.vramByte(VRAMSize+ar*AttrCols+ac)&AttrBlink != 0
+}
+
+// syncShadow records the whole of VRAM as painted, which is what a frame that
+// draws every cell leaves behind.
+func (s *State) syncShadow() {
+	n := copy(s.shadow, s.VRAM)
+	for i := n; i < len(s.shadow); i++ {
+		s.shadow[i] = 0
+	}
+}
+
+// appendCursorTo moves the terminal's cursor to a one-based row and column.
+func appendCursorTo(buf []byte, row, col int) []byte {
+	buf = append(buf, "\033["...)
+	buf = strconv.AppendInt(buf, int64(row), 10)
+	buf = append(buf, ';')
+	buf = strconv.AppendInt(buf, int64(col), 10)
+	return append(buf, 'H')
+}
+
+// appendBorderRow paints one row of border across the width of the window.
+func appendBorderRow(buf []byte, absRow, maxCols int, borderANSI string) []byte {
+	buf = appendCursorTo(buf, absRow, 1)
+	buf = append(buf, borderANSI...)
+	for i := 0; i < maxCols; i++ {
+		buf = append(buf, ' ')
+	}
+	return buf
 }
 
 // ---------------------------------------------------------------------------

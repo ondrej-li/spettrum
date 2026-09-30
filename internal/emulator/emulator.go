@@ -88,6 +88,12 @@ type Config struct {
 	AudioLatency time.Duration
 	QuickLoad    bool
 
+	// FullRefresh repaints the whole frame every time instead of only the cells
+	// that changed. Delta rendering is what keeps a still picture off the wire;
+	// this is the escape hatch for a terminal that does not take the cursor
+	// moves it needs well.
+	FullRefresh bool
+
 	// Headless runs the CPU only: no terminal, no rendering, no pacing.
 	Headless bool
 	// NoTerminal renders frames without putting the terminal into raw mode or
@@ -217,6 +223,7 @@ func (e *Emulator) Init() error {
 		mode = ula.RenderOCR
 	}
 	e.display = ula.New(e.mem[VRAMStart:VRAMStart+ula.TotalVRAM], mode)
+	e.display.SetIncremental(!e.cfg.FullRefresh)
 
 	// Create keyboard
 	e.kbd = keyboard.New()
@@ -430,8 +437,13 @@ func (e *Emulator) Run() error {
 
 		// Keep frames fitted to the window; this also picks up resizes.
 		e.syncTerminalSize()
-		if _, err := io.WriteString(e.out, e.display.RenderFrame()); err != nil {
-			return fmt.Errorf("write frame: %w", err)
+
+		// A frame that has nothing to say is left unsaid: with delta rendering,
+		// a still picture produces an empty frame.
+		if frame := e.display.RenderFrame(); frame != "" {
+			if _, err := io.WriteString(e.out, frame); err != nil {
+				return fmt.Errorf("write frame: %w", err)
+			}
 		}
 		if !e.cfg.Unpaced && !e.pacedByAudio() && !e.windingTape() {
 			ula.WaitFrame(frameStart, frameDuration)
