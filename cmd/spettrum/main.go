@@ -35,6 +35,7 @@ func main() {
 	audioLatency := flag.Int("audio-latency", int(beeper.DefaultLatency/time.Millisecond), "Audio buffer length in milliseconds")
 	audioSelfTest := flag.Bool("audio-selftest", false, "Play a test tone and exit")
 	quickLoad := flag.Bool("quick-load", true, "Wind the tape past at full speed instead of playing it in real time")
+	fullRefresh := flag.Bool("full-refresh", false, "Repaint the whole frame every time instead of only the cells that changed")
 	headless := flag.Bool("headless", false, "Run without a terminal or renderer (for tests/scripts)")
 	noTerminal := flag.Bool("no-terminal", false, "Render frames without raw mode/alt screen (for pipes and logs)")
 	turbo := flag.Bool("turbo", false, "Run unpaced, as fast as the host allows")
@@ -83,6 +84,7 @@ func main() {
 		AudioRate:    *audioRate,
 		AudioLatency: time.Duration(*audioLatency) * time.Millisecond,
 		QuickLoad:    *quickLoad,
+		FullRefresh:  *fullRefresh,
 		Headless:     *headless,
 		NoTerminal:   *noTerminal,
 		Unpaced:      *turbo,

@@ -72,6 +72,11 @@ func (m *termModel) feed(s string) {
 				switch s[j] {
 				case 'H', 'f':
 					m.moveTo(s[i+2 : j])
+				case 'J':
+					// Erase in display. The renderer asks for 2 - the whole screen -
+					// when a frame lands in a window the last one was not drawn in,
+					// and leaves the cursor where it is.
+					m.clear()
 				case 'K':
 					// erase to end of line: blanks the rest of the row, no movement
 					if m.y >= 0 && m.y < m.rows {
@@ -100,6 +105,16 @@ func (m *termModel) feed(s string) {
 			}
 		case r >= 0x20 && r != 0x7f:
 			m.put(r)
+		}
+	}
+}
+
+// clear blanks the whole grid, which is what the renderer's erase-in-display
+// asks for when it has to redraw a window the last frame was not drawn in.
+func (m *termModel) clear() {
+	for i := range m.grid {
+		for j := range m.grid[i] {
+			m.grid[i][j] = ' '
 		}
 	}
 }

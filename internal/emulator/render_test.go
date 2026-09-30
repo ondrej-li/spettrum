@@ -62,6 +62,49 @@ func lastFrame(rendered string) []string {
 	return frameLines(frames[len(frames)-1])
 }
 
+// runROM runs the real ROM with frames fitted to a window of the given size and
+// returns everything it rendered. fullRefresh sends whole frames whether the
+// renderer would rather send deltas or not.
+func runROM(t *testing.T, mode ula.RenderMode, fullRefresh bool, cols, rows, instructions int) string {
+	t.Helper()
+	var out bytes.Buffer
+	emu := New(Config{
+		ROMFile:      realROMPath,
+		RenderMode:   mode,
+		Output:       &out,
+		NoTerminal:   true,
+		Unpaced:      true,
+		Audio:        false,
+		FullRefresh:  fullRefresh,
+		Instructions: instructions,
+	})
+	if err := emu.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer emu.Close()
+
+	// Pretend we are attached to a window of this size.
+	emu.display.SetTerminalSize(cols, rows)
+
+	if err := emu.Run(); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	return out.String()
+}
+
+// replay feeds a rendered stream into a terminal model and returns it, which is
+// the only way to see what a stream of deltas leaves on the screen: the bytes
+// alone say where the cursor went, not what the screen looks like afterwards.
+func replay(t *testing.T, rendered string, cols, rows int) *termModel {
+	t.Helper()
+	model := newTermModel(cols, rows)
+	for _, frame := range splitFrames(rendered) {
+		// splitFrames drops the delimiter, so put the cursor-home back.
+		model.feed("\x1b[H" + frame)
+	}
+	return model
+}
+
 // TestBootsRealROMInOCRMode is the end-to-end acceptance test: it loads the real
 // ROM image from rom/, runs it through the OCR renderer and requires the boot
 // message to be on screen. Reaching that message means the whole chain works:
@@ -145,31 +188,12 @@ func TestOCRFrameFitsTerminal(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var out bytes.Buffer
-			emu := New(Config{
-				ROMFile:      realROMPath,
-				RenderMode:   ula.RenderOCR,
-				Output:       &out,
-				NoTerminal:   true,
-				Unpaced:      true,
-				Audio:        false,
-				Instructions: 2_000_000,
-			})
-			if err := emu.Init(); err != nil {
-				t.Fatalf("Init: %v", err)
-			}
-			defer emu.Close()
-
-			// Pretend we are attached to a window of this size.
-			emu.display.SetTerminalSize(tc.cols, tc.rows)
-
-			if err := emu.Run(); err != nil {
-				t.Fatalf("Run: %v", err)
-			}
-
-			frames := splitFrames(out.String())
-			if len(frames) < 2 {
-				t.Fatalf("expected several frames, got %d", len(frames))
+			// The shape of a frame is a property of whole frames - a delta has
+			// no rows of its own to measure - so it is checked on a run that
+			// repaints every frame.
+			frames := splitFrames(runROM(t, ula.RenderOCR, true, tc.cols, tc.rows, 2_000_000))
+			if len(frames) == 0 {
+				t.Fatal("nothing was rendered")
 			}
 			last := frames[len(frames)-1]
 			if strings.HasSuffix(last, "\n") {
@@ -191,12 +215,65 @@ func TestOCRFrameFitsTerminal(t *testing.T) {
 				}
 			}
 
-			screen := strings.Join(lines, "\n")
+			// What the default renderer leaves on the screen is only visible by
+			// replaying its stream: the screen has to end up showing the message,
+			// and neither the frames nor the deltas between them may wrap or
+			// scroll the window.
+			model := replay(t, runROM(t, ula.RenderOCR, false, tc.cols, tc.rows, 2_000_000), tc.cols, tc.rows)
+			if model.wrapped {
+				t.Error("output wrapped: a row is wider than the terminal")
+			}
+			if model.scrolled != 0 {
+				t.Errorf("output scrolled the terminal %d times", model.scrolled)
+			}
+
+			screen := strings.Join(model.screen(), "\n")
 			hasMessage := strings.Contains(screen, "1982 Sinclair Research Ltd")
 			if hasMessage != tc.wantMessage {
 				t.Errorf("message present = %v, want %v; screen:\n%s", hasMessage, tc.wantMessage, screen)
 			}
 		})
+	}
+}
+
+// TestIncrementalRenderingMatchesWholeFrames is what keeps the delta renderer
+// honest. The same ROM is run twice - once sending only what changed, once
+// repainting every frame - and both streams are replayed into a terminal. The
+// two screens have to agree, which is what catches a delta that misses a change
+// or puts one in the wrong cell, and the deltas have to be far the smaller of
+// the two, or the renderer is not doing anything.
+func TestIncrementalRenderingMatchesWholeFrames(t *testing.T) {
+	if _, err := os.Stat(realROMPath); err != nil {
+		t.Skipf("ROM image not available at %s: %v", realROMPath, err)
+	}
+
+	// Tall enough for the border, so the geometry is the interesting one.
+	const cols, rows, instructions = 80, 30, 3_000_000
+
+	deltaStream := runROM(t, ula.RenderOCR, false, cols, rows, instructions)
+	wholeStream := runROM(t, ula.RenderOCR, true, cols, rows, instructions)
+
+	deltaModel := replay(t, deltaStream, cols, rows)
+	wholeModel := replay(t, wholeStream, cols, rows)
+
+	whole := strings.Join(wholeModel.screen(), "\n")
+	if !strings.Contains(whole, "1982 Sinclair Research Ltd") {
+		t.Fatalf("the boot message is not on screen, so this proves nothing:\n%s", whole)
+	}
+	if got := strings.Join(deltaModel.screen(), "\n"); got != whole {
+		t.Errorf("the delta stream and the whole-frame stream disagree:\n%s\n---\n%s", got, whole)
+	}
+	for name, model := range map[string]*termModel{"deltas": deltaModel, "whole frames": wholeModel} {
+		if model.wrapped || model.scrolled != 0 {
+			t.Errorf("%s wrapped or scrolled the terminal (wrapped=%v, scrolled=%d)",
+				name, model.wrapped, model.scrolled)
+		}
+	}
+
+	ratio := float64(len(wholeStream)) / float64(len(deltaStream))
+	t.Logf("%d bytes as deltas, %d as whole frames (%.1fx)", len(deltaStream), len(wholeStream), ratio)
+	if ratio < 5 {
+		t.Errorf("deltas saved only %.1fx of the traffic, which is not what they are for", ratio)
 	}
 }
 
