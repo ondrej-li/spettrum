@@ -17,9 +17,17 @@ import (
 	"github.com/defik74/spettrum/pkg/keyboard"
 	"github.com/defik74/spettrum/pkg/snapshot"
 	"github.com/defik74/spettrum/pkg/tap"
+	"github.com/defik74/spettrum/pkg/tzx"
 	"github.com/defik74/spettrum/pkg/ula"
 	"github.com/defik74/spettrum/pkg/z80"
 )
+
+// tapeSignal is the EAR input a tape presents to the machine, which both the TAP
+// and the TZX player provide. Neither package has to know about the other.
+type tapeSignal interface {
+	ReadEAR(cpuCycles uint64) int
+	IsFinished() bool
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -63,6 +71,7 @@ type Config struct {
 	ROMFile      string
 	SnapshotFile string
 	TAPFile      string
+	TZXFile      string
 	Instructions int // 0 = unlimited
 	DisasmFile   string
 	RenderMode   ula.RenderMode
@@ -114,7 +123,7 @@ type Emulator struct {
 	// audio it had to drop.
 	audioDevice *beeper.DeviceSink
 
-	tapPlayer *tap.Player
+	tapPlayer tapeSignal
 	// tapeArmed records that the machine has started polling the tape port
 	// quickly, which is what a load looks like; see tapeArmReadsPerFrame.
 	tapeArmed          bool
@@ -229,14 +238,23 @@ func (e *Emulator) Init() error {
 		})
 	}
 
-	// Load TAP file. The file goes to the tape player rather than into memory:
-	// the ROM's own loader is what knows where each block belongs, and following
-	// it is the only way a tape with several parts - or one with a loader of its
+	// Load a tape. The file goes to a tape player rather than into memory: the
+	// ROM's own loader is what knows where each block belongs, and following it
+	// is the only way a tape with several parts - or one with a loader of its
 	// own - can load at all.
-	if e.cfg.TAPFile != "" {
+	switch {
+	case e.cfg.TAPFile != "" && e.cfg.TZXFile != "":
+		return errors.New("give either a TAP or a TZX file, not both")
+	case e.cfg.TAPFile != "":
 		tp, err := tap.NewPlayer(e.cfg.TAPFile)
 		if err != nil {
 			return fmt.Errorf("open TAP: %w", err)
+		}
+		e.tapPlayer = tp
+	case e.cfg.TZXFile != "":
+		tp, err := tzx.OpenPlayer(e.cfg.TZXFile)
+		if err != nil {
+			return fmt.Errorf("open TZX: %w", err)
 		}
 		e.tapPlayer = tp
 	}
