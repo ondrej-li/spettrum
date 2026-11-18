@@ -17,6 +17,7 @@
 
 #include "z80.h"
 #include "ula.h"
+#include "tap.h"
 
 // Emulator state
 typedef struct
@@ -32,6 +33,10 @@ typedef struct
     volatile int speed_delay;   // Delay in microseconds (0 = full speed)
     volatile int step_mode;     // Step mode: execute one instruction at a time
     const char *simulated_keys; // Keys to simulate (injected automatically)
+
+    // Tape loading
+    tape_player_t *tape_player; // Cassette tape player (NULL if no tape)
+    int use_authentic_loading;  // Use ROM loader instead of quick-load
 
     // Debug tracking
     uint16_t last_pc[10];        // Last 10 PC values

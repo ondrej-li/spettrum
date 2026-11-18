@@ -24,6 +24,7 @@
 #include "disasm.h"
 #include "keyboard.h"
 #include "z80snapshot.h"
+#include "tap.h"
 
 // Global emulator reference for signal handling
 static spettrum_emulator_t *g_emulator = NULL;
@@ -280,6 +281,8 @@ static void print_help(const char *program_name)
     printf("  -v, --version             Show version information\n");
     printf("  -r, --rom FILE            Load ROM from file\n");
     printf("  -s, --snapshot FILE       Load Z80 snapshot file (restores CPU and memory state)\n");
+    printf("  -t, --tap FILE            Load TAP tape image file\n");
+    printf("  -a, --tape-authentic      Use ROM loader for tape (port 0xFE simulation)\n");
     printf("  -d, --disk FILE           Load disk image from file\n");
     printf("  -i, --instructions NUM    Number of instructions to execute (0=unlimited, default=0)\n");
     printf("  -D, --disassemble FILE    Write disassembly to FILE\n");
@@ -319,11 +322,30 @@ static void emulator_write_memory(void *user_data, uint16_t addr, uint8_t value)
  * The Spectrum reads keyboard state via port 0xFE.
  * This handler queries the current host keyboard state and returns it
  * in Spectrum keyboard matrix format.
+ *
+ * If a tape is being played, bit 6 (EAR) is overridden with tape data.
  */
 static uint8_t keyboard_read_handler(void *user_data, uint16_t port)
 {
-    (void)user_data; // Not needed for stateless handler
-    return keyboard_read_port(port);
+    z80_callback_context_t *ctx = (z80_callback_context_t *)user_data;
+    uint8_t result = keyboard_read_port(port);
+
+    // If tape player is active and reading from port 0xFE (FD), inject EAR bit
+    if (ctx && ctx->io_data)
+    {
+        spettrum_emulator_t *emulator = (spettrum_emulator_t *)ctx->io_data;
+        if (emulator && emulator->tape_player && (port & 0xFF) == 0xFE)
+        {
+            // Bit 6 is EAR input - overwrite with tape data
+            uint8_t ear_bit = tape_player_read_ear(emulator->tape_player, emulator->cpu->cyc);
+            if (ear_bit)
+                result |= 0x40; // Set bit 6
+            else
+                result &= ~0x40; // Clear bit 6
+        }
+    }
+
+    return result;
 }
 
 /**
@@ -434,6 +456,10 @@ static spettrum_emulator_t *emulator_init(ula_render_mode_t render_mode)
     z80_register_port_in(emulator->cpu, 0xBF, keyboard_read_handler); // P, O, I, U, Y
     z80_register_port_in(emulator->cpu, 0x7F, keyboard_read_handler); // M, N, B, T, G
 
+    // Initialize tape player (will be set later if TAP file specified)
+    emulator->tape_player = NULL;
+    emulator->use_authentic_loading = 0;
+
     // Initialize warning buffer (initial 4KB)
     emulator->warning_buffer_size = 4096;
     emulator->warning_buffer = malloc(emulator->warning_buffer_size);
@@ -518,6 +544,10 @@ static void emulator_cleanup(spettrum_emulator_t *emulator)
 
     // Cleanup keyboard (restores terminal to normal mode)
     keyboard_cleanup();
+
+    // Close tape player if active
+    if (emulator->tape_player)
+        tape_player_close(emulator->tape_player);
 
     if (emulator->cpu)
         z80_cleanup(emulator->cpu);
@@ -778,9 +808,11 @@ int main(int argc, char *argv[])
 {
     const char *rom_file = NULL;
     const char *snapshot_file = NULL;
+    const char *tap_file = NULL;
     const char *disk_file = NULL;
     const char *disasm_file = NULL;
     const char *simulated_keys = NULL;                     // Simulated key string for testing
+    int use_authentic_tape_loading = 0;                    // Use ROM loader instead of quick-load
     uint64_t instructions_to_run = 0;                      // Default: unlimited
     ula_render_mode_t render_mode = ULA_RENDER_BRAILLE2X4; // Default: braille
 
@@ -790,6 +822,8 @@ int main(int argc, char *argv[])
         {"version", no_argument, 0, 'v'},
         {"rom", required_argument, 0, 'r'},
         {"snapshot", required_argument, 0, 's'},
+        {"tap", required_argument, 0, 't'},
+        {"tape-authentic", no_argument, 0, 'a'},
         {"disk", required_argument, 0, 'd'},
         {"instructions", required_argument, 0, 'i'},
         {"disassemble", required_argument, 0, 'D'},
@@ -800,7 +834,7 @@ int main(int argc, char *argv[])
     // Parse command-line arguments
     int option_index = 0;
     int c;
-    while ((c = getopt_long(argc, argv, "hvr:s:d:i:D:m:k:", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "hvr:s:t:ad:i:D:m:k:", long_options, &option_index)) != -1)
     {
         switch (c)
         {
@@ -815,6 +849,12 @@ int main(int argc, char *argv[])
             break;
         case 's':
             snapshot_file = optarg;
+            break;
+        case 't':
+            tap_file = optarg;
+            break;
+        case 'a':
+            use_authentic_tape_loading = 1;
             break;
         case 'd':
             disk_file = optarg;
@@ -931,6 +971,35 @@ int main(int argc, char *argv[])
             fprintf(stderr, "Error: Failed to load Z80 snapshot from '%s'\n", snapshot_file);
             emulator_cleanup(emulator);
             return EXIT_FAILURE;
+        }
+    }
+
+    // Load TAP tape image if specified
+    if (tap_file)
+    {
+        if (use_authentic_tape_loading)
+        {
+            // Authentic loading: ROM loader will read from port 0xFE (cassette EAR)
+            emulator->tape_player = tape_player_init(tap_file);
+            if (!emulator->tape_player)
+            {
+                fprintf(stderr, "Error: Failed to initialize tape player for '%s'\n", tap_file);
+                emulator_cleanup(emulator);
+                return EXIT_FAILURE;
+            }
+            emulator->use_authentic_loading = 1;
+            printf("Tape loaded for authentic ROM-based loading. Use LOAD \"\" in BASIC.\n");
+        }
+        else
+        {
+            // Quick-load: directly load TAP data to memory (bypasses ROM loader)
+            // Default load address: 0x5C00 (after color attributes)
+            if (tap_load_to_memory(tap_file, emulator->memory, SPETTRUM_TOTAL_MEMORY, 0x5C00) != 0)
+            {
+                fprintf(stderr, "Error: Failed to load TAP file from '%s'\n", tap_file);
+                emulator_cleanup(emulator);
+                return EXIT_FAILURE;
+            }
         }
     }
 
