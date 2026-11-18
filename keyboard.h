@@ -49,4 +49,12 @@ void keyboard_cleanup(void);
  */
 uint8_t keyboard_read_port(uint8_t port);
 
+/**
+ * Set a simulated key for testing (bypasses actual keyboard input)
+ * Useful for command-line testing when keyboard input isn't available
+ *
+ * @param key The ASCII character to simulate as pressed
+ */
+void keyboard_set_simulated_key(char key);
+
 #endif // KEYBOARD_H

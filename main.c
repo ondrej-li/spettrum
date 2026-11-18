@@ -275,13 +275,14 @@ static void print_help(const char *program_name)
 {
     printf("Usage: %s [OPTIONS]\n\n", program_name);
     printf("Options:\n");
-    printf("  -h, --help              Show this help message\n");
-    printf("  -v, --version           Show version information\n");
-    printf("  -r, --rom FILE          Load ROM from file\n");
-    printf("  -d, --disk FILE         Load disk image from file\n");
-    printf("  -i, --instructions NUM  Number of instructions to execute (0=unlimited, default=0)\n");
-    printf("  -D, --disassemble FILE  Write disassembly to FILE\n");
-    printf("  -m, --render-mode MODE  Rendering mode: block (2x2) or braille (2x4, default)\n");
+    printf("  -h, --help                Show this help message\n");
+    printf("  -v, --version             Show version information\n");
+    printf("  -r, --rom FILE            Load ROM from file\n");
+    printf("  -d, --disk FILE           Load disk image from file\n");
+    printf("  -i, --instructions NUM    Number of instructions to execute (0=unlimited, default=0)\n");
+    printf("  -D, --disassemble FILE    Write disassembly to FILE\n");
+    printf("  -m, --render-mode MODE    Rendering mode: block (2x2) or braille (2x4, default)\n");
+    printf("  -k, --simulate-key CHAR   Simulate a key press (e.g., 'q' for Q key, for testing)\n");
     printf("\n");
 }
 
@@ -711,6 +712,7 @@ int main(int argc, char *argv[])
     const char *rom_file = NULL;
     const char *disk_file = NULL;
     const char *disasm_file = NULL;
+    char simulated_key = 0;                                // Simulated key for testing
     uint64_t instructions_to_run = 0;                      // Default: unlimited
     ula_render_mode_t render_mode = ULA_RENDER_BRAILLE2X4; // Default: braille
 
@@ -723,12 +725,13 @@ int main(int argc, char *argv[])
         {"instructions", required_argument, 0, 'i'},
         {"disassemble", required_argument, 0, 'D'},
         {"render-mode", required_argument, 0, 'm'},
+        {"simulate-key", required_argument, 0, 'k'},
         {0, 0, 0, 0}};
 
     // Parse command-line arguments
     int option_index = 0;
     int c;
-    while ((c = getopt_long(argc, argv, "hvr:d:i:D:m:", long_options, &option_index)) != -1)
+    while ((c = getopt_long(argc, argv, "hvr:d:i:D:m:k:", long_options, &option_index)) != -1)
     {
         switch (c)
         {
@@ -765,6 +768,13 @@ int main(int argc, char *argv[])
                 return EXIT_FAILURE;
             }
             break;
+        case 'k':
+            // Simulate a key for testing
+            if (optarg && strlen(optarg) > 0)
+            {
+                simulated_key = optarg[0];
+            }
+            break;
         case '?':
             // getopt_long already printed error message
             fprintf(stderr, "Try '%s --help' for more information.\n", argv[0]);
@@ -798,6 +808,13 @@ int main(int argc, char *argv[])
     emulator->paused = 0;
     emulator->speed_delay = 0;
     emulator->step_mode = 0;
+
+    // Set simulated key if provided via command line
+    if (simulated_key != 0)
+    {
+        keyboard_set_simulated_key(simulated_key);
+        fprintf(stderr, "Simulating key: '%c' (0x%02X)\n", simulated_key, (unsigned char)simulated_key);
+    }
 
     // Initialize debug tracking
     memset(emulator->last_pc, 0, sizeof(emulator->last_pc));
