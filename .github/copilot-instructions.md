@@ -68,9 +68,9 @@ spettrum/
 │       └── snapshot.go
 ├── internal/
 │   └── emulator/
-│       ├── emulator.go         # Module integration, main loop
-│       └── romdata/            # Embedded default ROM
-├── rom/                        # ROM images
+│       └── emulator.go         # Module integration, main loop
+├── third_party/opense-basic/   # Bundled OpenSE BASIC ROM, license, source
+├── rom/                        # Local ROM images (git-ignored)
 ├── bin/                        # Build output
 ├── go.mod / go.sum
 └── Makefile.golang             # Go build targets
@@ -135,11 +135,8 @@ spettrum/
 │   ├── disasm.o
 │   └── keyboard.o
 │
-├── rom/                      ROM images (Spectrum firmware)
-│   ├── ZX_Spectrum_48k.rom   Standard Spectrum 48K ROM
-│   ├── DiagROMv.173.rom      Diagnostic ROM for testing
-│   ├── test.rom              Test ROM image
-│   └── DiagROMv.173          (ROM backup)
+├── rom/                      Local ROM images only; none are shipped
+│                             (users supply a 16 KB 48K ROM via --rom)
 │
 └── tests/                    Unit tests
     ├── Makefile              Test build configuration

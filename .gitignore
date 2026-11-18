@@ -46,3 +46,11 @@ vendor/
 bin/spettrum
 *.test
 *.z80
+
+# GoReleaser output
+/dist/
+
+# ROM images are never committed (see README: ROMs)
+*.rom
+# ...except the freely licensed ROM that releases ship
+!third_party/opense-basic/opense.rom

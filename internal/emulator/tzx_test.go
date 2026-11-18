@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/defik74/spettrum/pkg/tzx"
+	"github.com/ondrej-li/spettrum/pkg/tzx"
 )
 
 // ---------------------------------------------------------------------------
@@ -107,6 +107,7 @@ func tapAsTZX(t *testing.T, tapFile string) []byte {
 func loadTZX(t *testing.T, tape string, instructions int) string {
 	t.Helper()
 	emu := New(Config{
+		ROMFile:      realROMPath,
 		TZXFile:      tape,
 		SimKey:       "j\"\"\r",
 		Headless:     true,
@@ -128,6 +129,7 @@ func loadTZX(t *testing.T, tape string, instructions int) string {
 // can be read by the ROM itself: boot the machine, type LOAD "" for it, and see
 // the program it finds reported and then loaded.
 func TestTZXLoadsProgramFromGeneratedTape(t *testing.T) {
+	requireROM(t)
 	program := basicRem(10)
 	tape := filepath.Join(t.TempDir(), "program.tzx")
 	writeTZX(t, tape,
@@ -147,6 +149,7 @@ func TestTZXLoadsProgramFromGeneratedTape(t *testing.T) {
 // TestTZXTurboBlockLoadsProgram checks the same thing with the bytes in a turbo
 // speed block, whose timings are in the file rather than implied by the format.
 func TestTZXTurboBlockLoadsProgram(t *testing.T) {
+	requireROM(t)
 	program := basicRem(10)
 	tape := filepath.Join(t.TempDir(), "program.tzx")
 	writeTZX(t, tape,
@@ -168,6 +171,7 @@ func TestTZXTurboBlockLoadsProgram(t *testing.T) {
 //
 // The tape itself is not part of the repository, so this skips without it.
 func TestTZXLoadsARealTape(t *testing.T) {
+	requireROM(t)
 	if _, err := os.Stat(tapPath); err != nil {
 		t.Skipf("tape image not available at %s: %v", tapPath, err)
 	}

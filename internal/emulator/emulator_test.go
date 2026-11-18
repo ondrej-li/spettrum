@@ -3,10 +3,10 @@ package emulator
 import (
 	"math/bits"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
-
-	"github.com/defik74/spettrum/internal/emulator/romdata"
 )
 
 // TestKeyboardReachesROM types a BASIC command through the keyboard emulation and
@@ -17,9 +17,7 @@ import (
 // from host characters to matrix keys used lower case where the matrix stores the
 // upper-case key legends, so no letter ever matched a key.
 func TestKeyboardReachesROM(t *testing.T) {
-	if _, err := os.Stat(realROMPath); err != nil {
-		t.Skipf("ROM image not available at %s: %v", realROMPath, err)
-	}
+	requireROM(t)
 
 	emu := New(Config{
 		ROMFile:  realROMPath,
@@ -62,10 +60,40 @@ const charsetBase = 0x3D00
 // FRAMES system variable: incremented by the ROM's maskable interrupt handler.
 const sysFrames = 0x5C78
 
-// romGlyph returns the 8-byte bitmap for a ROM character code.
-func romGlyph(code byte) []byte {
-	base := charsetBase + (int(code)-0x20)*8
-	return romdata.DefaultROM[base : base+8]
+// requireROM skips a test when the checkout has no Amstrad ROM image. Spettrum
+// ships only OpenSE BASIC, so tests that pin the original ROM's behaviour only
+// run where one was supplied.
+func requireROM(t *testing.T) {
+	t.Helper()
+	if _, err := os.Stat(realROMPath); err != nil {
+		t.Skipf("ROM image not available at %s: %v", realROMPath, err)
+	}
+}
+
+// bundledROMPath is the freely licensed OpenSE BASIC image that releases ship.
+var bundledROMPath = filepath.Join("..", "..", "third_party", "opense-basic", "opense.rom")
+
+// fontBytes is the size of the printable-character bitmaps at charsetBase.
+const fontBytes = (0x80 - 0x20) * 8
+
+// testROM returns the ROM image the screen decoders compare against, or nil
+// when it is not present.
+var testROM = sync.OnceValue(func() []byte {
+	data, err := os.ReadFile(realROMPath)
+	if err != nil {
+		return nil
+	}
+	return data
+})
+
+// romGlyph returns the 8-byte bitmap for a ROM character code, or nil when the
+// ROM image is not available.
+func romGlyph(rom []byte, code byte) []byte {
+	base := (int(code) - 0x20) * 8
+	if len(rom) < base+8 {
+		return nil
+	}
+	return rom[base : base+8]
 }
 
 // vramByte returns the VRAM byte holding pixel row y for the column at x/8.
@@ -75,8 +103,18 @@ func vramByte(mem []byte, x, y int) byte {
 }
 
 // screenText decodes the display into 24 lines of 32 characters by matching
-// each 8x8 cell against the ROM character set.
+// each 8x8 cell against the character bitmaps of the ROM the tests boot.
 func screenText(mem []byte) []string {
+	rom := testROM()
+	if len(rom) < charsetBase+fontBytes {
+		return screenTextWith(mem, nil)
+	}
+	return screenTextWith(mem, rom[charsetBase:charsetBase+fontBytes])
+}
+
+// screenTextWith decodes the display using font, where font[0] is the bitmap for
+// ' '. Passing a machine's own font decodes whichever ROM it booted.
+func screenTextWith(mem, font []byte) []string {
 	lines := make([]string, 24)
 	var b strings.Builder
 	for row := 0; row < 24; row++ {
@@ -88,7 +126,10 @@ func screenText(mem []byte) []string {
 			}
 			best, bestDist := byte(' '), 1<<30
 			for code := 0x20; code <= 0x7F; code++ {
-				glyph := romGlyph(byte(code))
+				glyph := romGlyph(font, byte(code))
+				if glyph == nil {
+					continue
+				}
 				d := 0
 				for i := 0; i < 8; i++ {
 					d += bits.OnesCount8(cell[i] ^ glyph[i])
@@ -107,17 +148,20 @@ func screenText(mem []byte) []string {
 	return lines
 }
 
-// TestBootsEmbeddedROM boots the built-in 48K ROM headlessly and checks that the
-// machine actually reaches a working BASIC editor state: frame interrupts are
-// being delivered and the copyright message has been painted on screen.
+// TestBootsROM boots the 48K ROM headlessly and checks that the machine
+// actually reaches a working BASIC editor state: frame interrupts are being
+// delivered and the copyright message has been painted on screen.
+//
+// The ROM image is not part of the repository, so this skips without one.
 //
 // This is the regression test for the indexed-ALU bug that left the screen
 // blank: ADD A,(IY+$31) in the ROM's CL_ATTR routine corrupted the attribute
 // arithmetic, so the boot message was never drawn.
-func TestBootsEmbeddedROM(t *testing.T) {
+func TestBootsROM(t *testing.T) {
+	requireROM(t)
 	const instructions = 3_000_000
 
-	emu := New(Config{Headless: true, Instructions: instructions, Audio: false})
+	emu := New(Config{ROMFile: realROMPath, Headless: true, Instructions: instructions, Audio: false})
 	if err := emu.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -160,5 +204,36 @@ func TestWriteMemoryProtectsROM(t *testing.T) {
 	emu.WriteMemory(0x8000, 0x5A)
 	if emu.mem[0x8000] != 0x5A {
 		t.Error("WriteMemory did not write to RAM")
+	}
+}
+
+// TestBootsBundledROM boots the OpenSE BASIC image that release archives carry,
+// so CI exercises a real ROM even though the Amstrad image is never shipped. It
+// checks that the machine reaches the editor: interrupts are being delivered and
+// the ROM painted its banner.
+func TestBootsBundledROM(t *testing.T) {
+	if _, err := os.Stat(bundledROMPath); err != nil {
+		t.Fatalf("bundled ROM missing: %v", err)
+	}
+
+	const instructions = 3_000_000
+	emu := New(Config{ROMFile: bundledROMPath, Headless: true, Instructions: instructions, Audio: false})
+	if err := emu.Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	defer emu.Close()
+
+	if err := emu.Run(); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	frames := uint16(emu.mem[sysFrames]) | uint16(emu.mem[sysFrames+1])<<8
+	if frames == 0 {
+		t.Error("no 50Hz interrupts were delivered (FRAMES is still 0)")
+	}
+
+	text := strings.Join(screenTextWith(emu.mem[:], emu.mem[charsetBase:charsetBase+fontBytes]), "\n")
+	if !strings.Contains(text, "Nine Tiles Networks") {
+		t.Errorf("the bundled ROM did not paint its banner; screen was:\n%s", text)
 	}
 }

@@ -12,14 +12,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/defik74/spettrum/internal/emulator/romdata"
-	"github.com/defik74/spettrum/pkg/beeper"
-	"github.com/defik74/spettrum/pkg/keyboard"
-	"github.com/defik74/spettrum/pkg/snapshot"
-	"github.com/defik74/spettrum/pkg/tap"
-	"github.com/defik74/spettrum/pkg/tzx"
-	"github.com/defik74/spettrum/pkg/ula"
-	"github.com/defik74/spettrum/pkg/z80"
+	"github.com/ondrej-li/spettrum/pkg/beeper"
+	"github.com/ondrej-li/spettrum/pkg/keyboard"
+	"github.com/ondrej-li/spettrum/pkg/snapshot"
+	"github.com/ondrej-li/spettrum/pkg/tap"
+	"github.com/ondrej-li/spettrum/pkg/tzx"
+	"github.com/ondrej-li/spettrum/pkg/ula"
+	"github.com/ondrej-li/spettrum/pkg/z80"
 )
 
 // tapeSignal is the EAR input a tape presents to the machine, which both the TAP
@@ -68,6 +67,9 @@ const frameDuration = time.Duration(z80.FrameCycles) * time.Second / time.Durati
 
 // Config holds emulator configuration.
 type Config struct {
+	// ROMFile is the 16 KB ROM image to load at 0x0000. Spettrum does not
+	// include one, so the CLI requires it; leaving it empty runs whatever the
+	// ROM area happens to contain, which is only useful for tests.
 	ROMFile      string
 	SnapshotFile string
 	TAPFile      string
@@ -190,10 +192,10 @@ func (e *Emulator) Init() error {
 		if err != nil {
 			return fmt.Errorf("read ROM: %w", err)
 		}
+		if len(data) != ROMSize {
+			return fmt.Errorf("read ROM: %s is %d bytes, want %d", e.cfg.ROMFile, len(data), ROMSize)
+		}
 		copy(e.mem[ROMStart:], data)
-	} else {
-		// Use embedded ROM
-		copy(e.mem[ROMStart:], romdata.DefaultROM)
 	}
 
 	// Create CPU

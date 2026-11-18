@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/defik74/spettrum/pkg/tap"
+	"github.com/ondrej-li/spettrum/pkg/tap"
 )
 
 // pulseLengths plays the tape from the given cycle up to the given one and

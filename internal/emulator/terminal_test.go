@@ -8,7 +8,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/defik74/spettrum/pkg/ula"
+	"github.com/ondrej-li/spettrum/pkg/ula"
 )
 
 // termModel is a minimal terminal: enough of the control sequence, auto-wrap and

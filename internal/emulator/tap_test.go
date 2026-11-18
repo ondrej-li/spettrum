@@ -99,6 +99,7 @@ func loadTape(t *testing.T, tape string, instructions int) (*Emulator, string) {
 func loadTapeWith(t *testing.T, tape string, instructions int, quickLoad bool) (*Emulator, string) {
 	t.Helper()
 	emu := New(Config{
+		ROMFile:      realROMPath,
 		TAPFile:      tape,
 		QuickLoad:    quickLoad, // real speed, so the ROM reads the tape in emulated time
 		SimKey:       "j\"\"\r",
@@ -128,6 +129,7 @@ func loadTapeWith(t *testing.T, tape string, instructions int, quickLoad bool) (
 // pulse or a bit encoded with the wrong half-period leaves it waiting for a
 // leader that never ends.
 func TestTapeLoadsProgramFromGeneratedTape(t *testing.T) {
+	requireROM(t)
 	tape := filepath.Join(t.TempDir(), "program.tap")
 	writeProgramTape(t, tape, "generated", 10, basicRem(10))
 
@@ -152,6 +154,7 @@ func TestTapeLoadsProgramFromGeneratedTape(t *testing.T) {
 //
 // The tape is not part of the repository, so this skips without it.
 func TestTapeLoadsProgramFromTASWDEMO(t *testing.T) {
+	requireROM(t)
 	if _, err := os.Stat(tapPath); err != nil {
 		t.Skipf("tape image not available at %s: %v", tapPath, err)
 	}
@@ -175,12 +178,14 @@ func TestTapeLoadsProgramFromTASWDEMO(t *testing.T) {
 // can type LOAD "" - and then nothing can ever be loaded. It has to wait until
 // the machine polls the port the way its loading routine does.
 func TestTapeWaitsForALoadBeforePlaying(t *testing.T) {
+	requireROM(t)
 	tape := filepath.Join(t.TempDir(), "program.tap")
 	writeProgramTape(t, tape, "generated", 10, basicRem(10))
 
 	// Enough emulated time for the tape to have played out several times over
 	// had it started with the machine.
 	emu := New(Config{
+		ROMFile:      realROMPath,
 		TAPFile:      tape,
 		Headless:     true,
 		Unpaced:      true,
@@ -209,10 +214,11 @@ func TestTapeWaitsForALoadBeforePlaying(t *testing.T) {
 // belong, and writing them over whatever is at the start of RAM destroys the
 // screen and the system variables.
 func TestTapeIsNotCopiedIntoMemoryBlindly(t *testing.T) {
+	requireROM(t)
 	tape := filepath.Join(t.TempDir(), "program.tap")
 	writeProgramTape(t, tape, "generated", 10, basicRem(10))
 
-	emu := New(Config{TAPFile: tape, QuickLoad: true, Headless: true, Unpaced: true, Audio: false})
+	emu := New(Config{ROMFile: realROMPath, TAPFile: tape, QuickLoad: true, Headless: true, Unpaced: true, Audio: false})
 	if err := emu.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}

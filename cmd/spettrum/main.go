@@ -5,22 +5,44 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"regexp"
+	"runtime/debug"
 	"strings"
 	"time"
 
-	"github.com/defik74/spettrum/internal/emulator"
-	"github.com/defik74/spettrum/pkg/beeper"
-	"github.com/defik74/spettrum/pkg/ula"
+	"github.com/ondrej-li/spettrum/internal/emulator"
+	"github.com/ondrej-li/spettrum/pkg/beeper"
+	"github.com/ondrej-li/spettrum/pkg/ula"
 )
 
-const (
-	versionMajor = 0
-	versionMinor = 2
-	versionPatch = 0
-)
+// version is stamped into release binaries with -ldflags "-X main.version=1.2.3".
+// It stays empty for local builds, where the module version recorded by
+// `go install ...@vX.Y.Z` is used instead, falling back to defaultVersion.
+var version = ""
+
+// defaultVersion is reported by a plain local `go build` outside a release.
+const defaultVersion = "0.2.0"
+
+// pseudoVersion matches the pre-release part of a module pseudo-version
+// ("v0.0.0-20240101120000-abcdef123456"), which `go build` records for a local
+// checkout and which says nothing about the released version.
+var pseudoVersion = regexp.MustCompile(`-\d{14}-`)
+
+// buildVersion returns the version of this build, without a leading "v".
+func buildVersion() string {
+	if version != "" {
+		return strings.TrimPrefix(version, "v")
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if v := info.Main.Version; v != "" && v != "(devel)" && !pseudoVersion.MatchString(v) {
+			return strings.TrimPrefix(v, "v")
+		}
+	}
+	return defaultVersion
+}
 
 func main() {
-	romFile := flag.String("rom", "", "Load ROM from file (default: embedded 48K ROM)")
+	romFile := flag.String("rom", "", "Load 16 KB ROM image from file (default: bundled OpenSE BASIC)")
 	snapshotFile := flag.String("snapshot", "", "Load .z80 snapshot file")
 	tapFile := flag.String("tap", "", "Load .tap cassette file")
 	tzxFile := flag.String("tzx", "", "Load .tzx cassette file")
@@ -42,8 +64,7 @@ func main() {
 	showVersion := flag.Bool("version", false, "Show version information")
 
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Spettrum v%d.%d.%d — ZX Spectrum Emulator (Go)\n\n",
-			versionMajor, versionMinor, versionPatch)
+		fmt.Fprintf(os.Stderr, "Spettrum v%s — ZX Spectrum Emulator (Go)\n\n", buildVersion())
 		fmt.Fprintf(os.Stderr, "Usage: %s [flags]\n\nFlags:\n", os.Args[0])
 		flag.PrintDefaults()
 	}
@@ -51,7 +72,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Printf("Spettrum v%d.%d.%d (Go)\n", versionMajor, versionMinor, versionPatch)
+		fmt.Printf("Spettrum v%s (Go)\n", buildVersion())
 		return
 	}
 
@@ -97,6 +118,17 @@ func main() {
 		}
 		return
 	}
+
+	romPath, err := findROM(cfg.ROMFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "No ROM image found.")
+		fmt.Fprintln(os.Stderr, "Release archives and packages ship OpenSE BASIC next to the binary; a build")
+		fmt.Fprintln(os.Stderr, "from source or with go install needs one passed explicitly, for example:")
+		fmt.Fprintln(os.Stderr, "  spettrum --rom third_party/opense-basic/opense.rom")
+		fmt.Fprintln(os.Stderr, "You can also point --rom (or SPETTRUM_ROM) at an original Spectrum ROM.")
+		os.Exit(1)
+	}
+	cfg.ROMFile = romPath
 
 	emu := emulator.New(cfg)
 	defer emu.Close()

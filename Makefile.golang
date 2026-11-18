@@ -5,8 +5,11 @@
 BINARY := bin/spettrum-go
 CMD := ./cmd/spettrum
 
+# Stamped into the binary as its version; release builds pass VERSION=vX.Y.Z.
+VERSION ?= $(shell git describe --tags --always 2>/dev/null)
+
 build:
-	go build -o $(BINARY) $(CMD)
+	go build -trimpath -ldflags "-X main.version=$(VERSION)" -o $(BINARY) $(CMD)
 
 test:
 	go test ./...

@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/defik74/spettrum/pkg/beeper"
-	"github.com/defik74/spettrum/pkg/z80"
+	"github.com/ondrej-li/spettrum/pkg/beeper"
+	"github.com/ondrej-li/spettrum/pkg/z80"
 )
 
 // The program below toggles the ULA speaker bit at a fixed rate. The ROM never
@@ -128,7 +128,7 @@ func TestBeeperSilenceWithoutAudioWrites(t *testing.T) {
 	}
 	defer emu.Close()
 
-	// Run the ROM, which writes the speaker bit but never changes it.
+	// Run the machine with nothing loaded: the speaker bit is never toggled.
 	if err := emu.Run(); err != nil {
 		t.Fatalf("Run: %v", err)
 	}

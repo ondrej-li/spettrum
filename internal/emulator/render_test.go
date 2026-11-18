@@ -9,7 +9,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/defik74/spettrum/pkg/ula"
+	"github.com/ondrej-li/spettrum/pkg/ula"
 )
 
 // ansisPattern matches the SGR colour sequences the renderer emits.

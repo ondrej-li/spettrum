@@ -1,6 +1,6 @@
-module github.com/defik74/spettrum
+module github.com/ondrej-li/spettrum
 
-go 1.26.5
+go 1.25.0
 
 require (
 	github.com/ebitengine/oto/v3 v3.5.1
